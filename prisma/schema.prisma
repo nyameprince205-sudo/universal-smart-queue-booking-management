@@ -1,0 +1,538 @@
+// ============================================================
+// Universal Smart Queue & Booking Management System
+// Prisma Schema — mirrors schema.sql
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------
+// 1. PLATFORM & IDENTITY
+// ------------------------------------------------------------
+
+model BusinessType {
+  id            Int            @id @default(autoincrement())
+  name          String         @unique @db.VarChar(100)
+  description   String?        @db.VarChar(255)
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+  organizations Organization[]
+
+  @@map("business_types")
+}
+
+model Organization {
+  id               BigInt      @id @default(autoincrement())
+  uuid             String      @unique @db.Char(36)
+  businessTypeId   Int         @map("business_type_id")
+  name             String      @db.VarChar(150)
+  slug             String      @unique @db.VarChar(150)
+  email            String      @unique @db.VarChar(150)
+  phone            String?     @db.VarChar(30)
+  logoUrl          String?     @map("logo_url") @db.VarChar(255)
+  status           OrgStatus   @default(trial)
+  createdAt        DateTime    @default(now()) @map("created_at")
+  updatedAt        DateTime    @updatedAt @map("updated_at")
+
+  businessType         BusinessType          @relation(fields: [businessTypeId], references: [id])
+  settings             OrganizationSettings?
+  branches             Branch[]
+  users                User[]
+  customerOrganizations CustomerOrganization[]
+  services             Service[]
+  bookings             Booking[]
+  serviceCounters      ServiceCounter[]
+  queueTickets         QueueTicket[]
+  subscriptions        Subscription[]
+  payments             Payment[]
+  notifications        Notification[]
+  auditLogs            AuditLog[]
+
+  @@index([status])
+  @@map("organizations")
+}
+
+enum OrgStatus {
+  trial
+  active
+  suspended
+  cancelled
+}
+
+model OrganizationSettings {
+  id                    BigInt   @id @default(autoincrement())
+  organizationId        BigInt   @unique @map("organization_id")
+  queuePrefix           String   @default("Q") @map("queue_prefix") @db.VarChar(5)
+  timezone              String   @default("Africa/Accra") @db.VarChar(50)
+  bookingRules          Json?    @map("booking_rules")
+  notificationSettings  Json?    @map("notification_settings")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("organization_settings")
+}
+
+model Branch {
+  id              BigInt       @id @default(autoincrement())
+  organizationId  BigInt       @map("organization_id")
+  name            String       @db.VarChar(150)
+  address         String?      @db.VarChar(255)
+  phone           String?      @db.VarChar(30)
+  timezone        String?      @db.VarChar(50)
+  status          BranchStatus @default(active)
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  users           User[]
+  services        Service[]
+  bookings        Booking[]
+  serviceCounters ServiceCounter[]
+  queueTickets    QueueTicket[]
+
+  @@unique([organizationId, name], name: "uq_branch_org_name")
+  @@index([organizationId])
+  @@map("branches")
+}
+
+enum BranchStatus {
+  active
+  inactive
+}
+
+model Role {
+  id              Int              @id @default(autoincrement())
+  name            String           @unique @db.VarChar(50)
+  description     String?          @db.VarChar(255)
+  users           User[]
+  rolePermissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id              Int              @id @default(autoincrement())
+  name            String           @unique @db.VarChar(100)
+  description     String?          @db.VarChar(255)
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       Int
+  permissionId Int
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model User {
+  id             BigInt     @id @default(autoincrement())
+  uuid           String     @unique @db.Char(36)
+  organizationId BigInt?    @map("organization_id")
+  branchId       BigInt?    @map("branch_id")
+  roleId         Int        @map("role_id")
+  name           String     @db.VarChar(150)
+  email          String     @unique @db.VarChar(150)
+  phone          String?    @db.VarChar(30)
+  passwordHash   String     @map("password_hash") @db.VarChar(255)
+  status         UserStatus @default(active)
+  lastLoginAt    DateTime?  @map("last_login_at")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  role         Role          @relation(fields: [roleId], references: [id])
+  auditLogs    AuditLog[]
+
+  @@index([organizationId])
+  @@index([branchId])
+  @@map("users")
+}
+
+enum UserStatus {
+  active
+  inactive
+  suspended
+}
+
+// ------------------------------------------------------------
+// 2. CUSTOMERS
+// ------------------------------------------------------------
+
+model Customer {
+  id           BigInt         @id @default(autoincrement())
+  uuid         String         @unique @db.Char(36)
+  name         String         @db.VarChar(150)
+  phone        String         @unique @db.VarChar(30)
+  email        String?        @db.VarChar(150)
+  passwordHash String?        @map("password_hash") @db.VarChar(255)
+  status       CustomerStatus @default(active)
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+
+  customerOrganizations CustomerOrganization[]
+  bookings              Booking[]
+  queueTickets          QueueTicket[]
+
+  @@map("customers")
+}
+
+enum CustomerStatus {
+  active
+  blocked
+}
+
+model CustomerOrganization {
+  id                  BigInt        @id @default(autoincrement())
+  customerId          BigInt        @map("customer_id")
+  organizationId      BigInt        @map("organization_id")
+  firstInteractionAt  DateTime      @map("first_interaction_at")
+  lastInteractionAt   DateTime      @map("last_interaction_at")
+  totalBookings       Int           @default(0) @map("total_bookings")
+  status              CustomerOrgStatus @default(active)
+
+  customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, organizationId], name: "uq_customer_org")
+  @@index([organizationId])
+  @@map("customer_organizations")
+}
+
+enum CustomerOrgStatus {
+  active
+  blacklisted
+}
+
+// ------------------------------------------------------------
+// 3. SERVICES & BOOKINGS
+// ------------------------------------------------------------
+
+model Service {
+  id               BigInt   @id @default(autoincrement())
+  organizationId   BigInt   @map("organization_id")
+  branchId         BigInt?  @map("branch_id")
+  name             String   @db.VarChar(150)
+  description      String?  @db.VarChar(255)
+  durationMinutes  Int      @default(30) @map("duration_minutes")
+  price            Decimal? @db.Decimal(10, 2)
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  bookings     Booking[]
+  queueTickets QueueTicket[]
+
+  @@index([organizationId, isActive])
+  @@map("services")
+}
+
+model Booking {
+  id             BigInt        @id @default(autoincrement())
+  uuid           String        @unique @db.Char(36)
+  organizationId BigInt        @map("organization_id")
+  branchId       BigInt        @map("branch_id")
+  customerId     BigInt        @map("customer_id")
+  serviceId      BigInt        @map("service_id")
+  bookingDate    DateTime      @map("booking_date") @db.Date
+  bookingTime    DateTime      @map("booking_time") @db.Time(0)
+  partySize      Int           @default(1) @map("party_size")
+  status         BookingStatus @default(pending)
+  notes          String?       @db.VarChar(500)
+  deletedAt      DateTime?     @map("deleted_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch        @relation(fields: [branchId], references: [id])
+  customer     Customer      @relation(fields: [customerId], references: [id])
+  service      Service       @relation(fields: [serviceId], references: [id])
+  queueTickets QueueTicket[]
+
+  @@index([organizationId, bookingDate, status])
+  @@index([customerId])
+  @@map("bookings")
+}
+
+enum BookingStatus {
+  pending
+  confirmed
+  checked_in
+  cancelled
+  completed
+  no_show
+}
+
+// ------------------------------------------------------------
+// 4. QUEUE ENGINE
+// ------------------------------------------------------------
+
+model ServiceCounter {
+  id             BigInt        @id @default(autoincrement())
+  organizationId BigInt        @map("organization_id")
+  branchId       BigInt        @map("branch_id")
+  name           String        @db.VarChar(100)
+  status         CounterStatus @default(closed)
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  queueTickets QueueTicket[]
+
+  @@unique([branchId, name], name: "uq_counter_branch_name")
+  @@map("service_counters")
+}
+
+enum CounterStatus {
+  open
+  closed
+  brk @map("break")
+}
+
+model QueueTicket {
+  id             BigInt      @id @default(autoincrement())
+  uuid           String      @unique @db.Char(36)
+  organizationId BigInt      @map("organization_id")
+  branchId       BigInt      @map("branch_id")
+  bookingId      BigInt?     @map("booking_id")
+  customerId     BigInt      @map("customer_id")
+  serviceId      BigInt      @map("service_id")
+  counterId      BigInt?     @map("counter_id")
+  queueDate      DateTime    @map("queue_date") @db.Date
+  ticketNumber   String      @map("ticket_number") @db.VarChar(20)
+  priority       Int         @default(0) @db.UnsignedTinyInt
+  status         QueueStatus @default(waiting)
+  createdAt      DateTime    @default(now()) @map("created_at")
+  calledAt       DateTime?   @map("called_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch       Branch          @relation(fields: [branchId], references: [id])
+  booking      Booking?        @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  customer     Customer        @relation(fields: [customerId], references: [id])
+  service      Service         @relation(fields: [serviceId], references: [id])
+  counter      ServiceCounter? @relation(fields: [counterId], references: [id], onDelete: SetNull)
+  history      QueueHistory?
+
+  @@unique([organizationId, branchId, queueDate, ticketNumber], name: "uq_ticket_per_branch_day")
+  @@index([organizationId, branchId, status])
+  @@map("queue_tickets")
+}
+
+enum QueueStatus {
+  waiting
+  called
+  serving
+  completed
+  cancelled
+}
+
+model QueueHistory {
+  id                  BigInt    @id @default(autoincrement())
+  queueTicketId       BigInt    @unique @map("queue_ticket_id")
+  enteredQueueAt      DateTime  @map("entered_queue_at")
+  calledAt            DateTime? @map("called_at")
+  serviceStartAt      DateTime? @map("service_start_at")
+  completedAt         DateTime? @map("completed_at")
+  waitTimeSeconds     Int?      @map("wait_time_seconds")
+  serviceTimeSeconds  Int?      @map("service_time_seconds")
+
+  queueTicket QueueTicket @relation(fields: [queueTicketId], references: [id], onDelete: Cascade)
+
+  @@map("queue_history")
+}
+
+// ------------------------------------------------------------
+// 5. BILLING
+// ------------------------------------------------------------
+
+model Plan {
+  id            Int           @id @default(autoincrement())
+  name          String        @unique @db.VarChar(50)
+  price         Decimal       @default(0) @db.Decimal(10, 2)
+  billingCycle  BillingCycle  @default(monthly) @map("billing_cycle")
+  maxBranches   Int?          @map("max_branches")
+  maxUsers      Int?          @map("max_users")
+  isActive      Boolean       @default(true) @map("is_active")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  features            SubscriptionFeature[]
+  subscriptions        Subscription[]
+  oldPlanTransactions  SubscriptionTransaction[] @relation("OldPlan")
+  newPlanTransactions  SubscriptionTransaction[] @relation("NewPlan")
+
+  @@map("plans")
+}
+
+enum BillingCycle {
+  monthly
+  yearly
+}
+
+model SubscriptionFeature {
+  id            Int    @id @default(autoincrement())
+  planId        Int    @map("plan_id")
+  featureKey    String @map("feature_key") @db.VarChar(100)
+  featureValue  String @map("feature_value") @db.VarChar(255)
+
+  plan Plan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, featureKey], name: "uq_plan_feature")
+  @@map("subscription_features")
+}
+
+model Subscription {
+  id             BigInt   @id @default(autoincrement())
+  organizationId BigInt   @map("organization_id")
+  planId         Int      @map("plan_id")
+  startDate      DateTime @map("start_date") @db.Date
+  endDate        DateTime @map("end_date") @db.Date
+  status         SubStatus @default(trial)
+  autoRenew      Boolean  @default(true) @map("auto_renew")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan         Plan                      @relation(fields: [planId], references: [id])
+  payments     Payment[]
+  transactions SubscriptionTransaction[]
+
+  @@index([organizationId, status])
+  @@map("subscriptions")
+}
+
+enum SubStatus {
+  trial
+  active
+  expired
+  cancelled
+}
+
+model Payment {
+  id                BigInt        @id @default(autoincrement())
+  uuid              String        @unique @db.Char(36)
+  organizationId    BigInt        @map("organization_id")
+  subscriptionId    BigInt?       @map("subscription_id")
+  amount            Decimal       @db.Decimal(10, 2)
+  currency          String        @default("GHS") @db.VarChar(10)
+  gateway           String        @default("paystack") @db.VarChar(50)
+  gatewayReference  String        @unique @map("gateway_reference") @db.VarChar(150)
+  status            PaymentStatus @default(pending)
+  paidAt            DateTime?     @map("paid_at")
+  deletedAt         DateTime?     @map("deleted_at")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscription Subscription?             @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  transactions SubscriptionTransaction[]
+
+  @@index([organizationId, status])
+  @@map("payments")
+}
+
+enum PaymentStatus {
+  pending
+  successful
+  failed
+}
+
+model SubscriptionTransaction {
+  id               BigInt          @id @default(autoincrement())
+  subscriptionId   BigInt          @map("subscription_id")
+  paymentId        BigInt?         @map("payment_id")
+  transactionType  TransactionType @map("transaction_type")
+  oldPlanId        Int?            @map("old_plan_id")
+  newPlanId        Int?            @map("new_plan_id")
+  createdAt        DateTime        @default(now()) @map("created_at")
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  payment      Payment?     @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  oldPlan      Plan?        @relation("OldPlan", fields: [oldPlanId], references: [id])
+  newPlan      Plan?        @relation("NewPlan", fields: [newPlanId], references: [id])
+
+  @@map("subscription_transactions")
+}
+
+enum TransactionType {
+  new
+  renewal
+  upgrade
+  downgrade
+  cancellation
+}
+
+// ------------------------------------------------------------
+// 6. NOTIFICATIONS & AUDIT
+// ------------------------------------------------------------
+
+model Notification {
+  id             BigInt              @id @default(autoincrement())
+  organizationId BigInt?             @map("organization_id")
+  recipientType  RecipientType       @map("recipient_type")
+  recipientId    BigInt              @map("recipient_id")
+  channel        NotificationChannel
+  message        String              @db.VarChar(500)
+  status         NotificationStatus  @default(pending)
+  sentAt         DateTime?           @map("sent_at")
+  createdAt      DateTime            @default(now()) @map("created_at")
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([recipientType, recipientId])
+  @@index([organizationId])
+  @@map("notifications")
+}
+
+enum RecipientType {
+  customer
+  user
+}
+
+enum NotificationChannel {
+  sms
+  whatsapp
+  email
+}
+
+enum NotificationStatus {
+  pending
+  sent
+  failed
+}
+
+model AuditLog {
+  id             BigInt   @id @default(autoincrement())
+  organizationId BigInt?  @map("organization_id")
+  userId         BigInt?  @map("user_id")
+  action         String   @db.VarChar(100)
+  entityType     String   @map("entity_type") @db.VarChar(100)
+  entityId       BigInt?  @map("entity_id")
+  metadata       Json?
+  ipAddress      String?  @map("ip_address") @db.VarChar(45)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@map("audit_logs")
+}

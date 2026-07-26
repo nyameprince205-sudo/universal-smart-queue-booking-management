@@ -2,7 +2,7 @@
 
 Node.js + Express + Prisma backend for the Universal Smart Queue & Booking Management System.
 
-## Phase 5 status: Backend Foundation ✅
+## Phase 5 status: Backend Foundation 
 
 This is the project skeleton: Express app, middleware pipeline, Prisma connection, environment validation, health check. No feature routes (auth, branches, services, bookings, queue) are wired into `app.js` yet — they'll be introduced and explained one at a time in their own phases, even though the files already exist under `src/controllers` and `src/routes`.
 

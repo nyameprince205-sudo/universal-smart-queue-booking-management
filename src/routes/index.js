@@ -21,9 +21,9 @@ router.get("/health", async (req, res) => {
 router.use("/auth", require("./auth.routes")); // <- Phase 6, mounted now
 router.use("/organizations", require("./organization.routes")); // <- Phase 7, mounted now
 router.use("/branches", require("./branch.routes")); // <- Phase 7, mounted now
+router.use("/services", require("./service.routes")); // <- Phase 8, mounted now
 
 // Still to come:
-//   router.use("/services", require("./service.routes"));  <- Phase 8
 //   router.use("/bookings", require("./booking.routes"));  <- Phase 10
 //   router.use("/queue", require("./queue.routes"));       <- Phase 11
 

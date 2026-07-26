@@ -23,9 +23,9 @@ router.use("/organizations", require("./organization.routes")); // <- Phase 7, m
 router.use("/branches", require("./branch.routes")); // <- Phase 7, mounted now
 router.use("/services", require("./service.routes")); // <- Phase 8, mounted now
 router.use("/customers", require("./customer.routes")); // <- Phase 9, mounted now
+router.use("/bookings", require("./booking.routes")); // <- Phase 10, mounted now
 
 // Still to come:
-//   router.use("/bookings", require("./booking.routes"));  <- Phase 10
 //   router.use("/queue", require("./queue.routes"));       <- Phase 11
 
 module.exports = router;

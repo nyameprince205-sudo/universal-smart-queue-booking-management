@@ -154,7 +154,7 @@ async function quickRegister(req, res) {
   // booking.controller.js when a booking is created.
   await prisma.customerOrganization.upsert({
     where: {
-      customerId_organizationId: {
+      uq_customer_org: {
         customerId: customer.id,
         organizationId: req.tenant.organizationId,
       },

@@ -30,7 +30,7 @@ async function main() {
     });
 
     if (result.count === 0) {
-      console.log(`⚠️  No user found with email ${email} — skipped`);
+      console.log(` No user found with email ${email} — skipped`);
     } else {
       console.log(`✔ Password set for ${email}`);
     }

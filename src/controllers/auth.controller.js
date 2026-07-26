@@ -83,4 +83,31 @@ async function refresh(req, res) {
   return res.json({ accessToken });
 }
 
-module.exports = { login, refresh };
+// Returns the currently logged-in user's own profile. Every field here comes
+// from req.auth, which auth.middleware.js already populated from the
+// verified JWT — this controller doesn't re-check the token itself, it
+// trusts the middleware that ran before it. That's the whole point of
+// putting authenticate() in front of this route instead of duplicating
+// token-checking logic in every controller that needs "who is this."
+async function getMe(req, res) {
+  const user = await prisma.user.findUnique({
+    where: { id: BigInt(req.auth.userId) },
+    include: { role: true },
+  });
+
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+
+  return res.json({
+    id: user.id.toString(),
+    name: user.name,
+    email: user.email,
+    role: user.role.name,
+    organizationId: user.organizationId ? user.organizationId.toString() : null,
+    branchId: user.branchId ? user.branchId.toString() : null,
+    lastLoginAt: user.lastLoginAt,
+  });
+}
+
+module.exports = { login, refresh, getMe };

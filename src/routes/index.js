@@ -17,9 +17,13 @@ router.get("/health", async (req, res) => {
   }
 });
 
-// Feature routes get mounted here phase by phase, e.g.:
-//   router.use("/auth", require("./auth.routes"));        <- Phase 6
+// Feature routes, mounted phase by phase:
+router.use("/auth", require("./auth.routes")); // <- Phase 6, mounted now
+
+// Still to come:
 //   router.use("/branches", require("./branch.routes"));   <- Phase 7
-// Nothing else is mounted yet — that's the whole point of Phase 5.
+//   router.use("/services", require("./service.routes"));  <- Phase 8
+//   router.use("/bookings", require("./booking.routes"));  <- Phase 10
+//   router.use("/queue", require("./queue.routes"));       <- Phase 11
 
 module.exports = router;

@@ -1,6 +1,7 @@
 const prisma = require("../config/db");
 const { randomUUID } = require("crypto");
 const { emitQueueUpdate } = require("../socket");
+const { notifyInBackground, getPreferredChannel } = require("../services/notification.service");
 
 // This file is the heart of the whole product. Read the comments closely —
 // this is the part worth understanding deeply, not just copying.
@@ -137,11 +138,17 @@ async function checkIn(req, res) {
     return newTicket;
   });
 
-  // Notification is fired outside the transaction on purpose: a slow/failed
-  // SMS send should never roll back the queue ticket that was successfully
-  // created. Queueing/logging notification failures separately (see
-  // notifications table) is the right place for that concern — stubbed here.
-  // await sendNotification(ticket.customerId, `Your queue number is ${ticket.ticketNumber}`);
+  // Fired AFTER the transaction commits — same reasoning as
+  // booking.controller.js: a slow/failed send should never roll back a
+  // queue ticket that was already successfully created.
+  const channel = await getPreferredChannel(req.tenant.organizationId);
+  notifyInBackground({
+    organizationId: req.tenant.organizationId,
+    recipientType: "customer",
+    recipientId: BigInt(customerId),
+    channel,
+    message: `Your queue number is ${ticket.ticketNumber}. Please wait to be called.`,
+  });
 
   await broadcastBoard(req.tenant.organizationId, branchId);
 
@@ -197,6 +204,15 @@ async function callNext(req, res) {
     });
 
     return t;
+  });
+
+  const channel = await getPreferredChannel(req.tenant.organizationId);
+  notifyInBackground({
+    organizationId: req.tenant.organizationId,
+    recipientType: "customer",
+    recipientId: nextTicket.customerId,
+    channel,
+    message: `You're being called! Please proceed to the counter — ticket ${nextTicket.ticketNumber}.`,
   });
 
   await broadcastBoard(req.tenant.organizationId, branchId);

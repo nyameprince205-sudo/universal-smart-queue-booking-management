@@ -1,5 +1,6 @@
 const prisma = require("../config/db");
 const { randomUUID } = require("crypto");
+const { notifyInBackground, getPreferredChannel } = require("../services/notification.service");
 
 // A booking's status is a proper state machine, not a free-for-all field.
 // This table is the single source of truth for "what can become what" —
@@ -74,6 +75,19 @@ async function createBookingCore({ organizationId, branchId, customerId, service
     });
 
     return created;
+  });
+
+  // Fired AFTER the transaction commits, not inside it — a slow or failed
+  // notification send should never roll back a booking that was already
+  // successfully created. notifyInBackground doesn't block this function
+  // either, for the same reason.
+  const channel = await getPreferredChannel(organizationId);
+  notifyInBackground({
+    organizationId,
+    recipientType: "customer",
+    recipientId: customerId,
+    channel,
+    message: `Your booking for ${bookingDate} at ${bookingTime} has been received and is pending confirmation.`,
   });
 
   return booking;

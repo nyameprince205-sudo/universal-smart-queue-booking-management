@@ -1,7 +1,35 @@
 const prisma = require("../config/db");
+const { randomUUID } = require("crypto");
+const { emitQueueUpdate } = require("../socket");
 
 // This file is the heart of the whole product. Read the comments closely —
 // this is the part worth understanding deeply, not just copying.
+
+// Service counters (Teller 1, Reception Desk, Consultation Room 1...) need
+// to exist before callNext can assign a ticket to one. Nothing built so far
+// creates them through the API — only seed.sql did, by hand. That's a real
+// gap, not a test convenience, so it's fixed here rather than worked around.
+async function createCounter(req, res) {
+  const { branchId, name } = req.body;
+  if (!branchId || !name) return res.status(400).json({ error: "branchId and name are required" });
+
+  const branch = await prisma.branch.findFirst({
+    where: { id: BigInt(branchId), organizationId: req.tenant.organizationId },
+  });
+  if (!branch) return res.status(400).json({ error: "branchId does not belong to this organization" });
+
+  const counter = await prisma.serviceCounter.create({
+    data: { organizationId: req.tenant.organizationId, branchId: BigInt(branchId), name },
+  });
+
+  return res.status(201).json({
+    id: counter.id.toString(),
+    organizationId: counter.organizationId.toString(),
+    branchId: counter.branchId.toString(),
+    name: counter.name,
+    status: counter.status,
+  });
+}
 
 function todayDateOnly() {
   // MySQL DATE columns don't care about time-of-day, so we normalize to
@@ -10,6 +38,33 @@ function todayDateOnly() {
   // as a deliberate simplification for now; note it as a known TODO.
   const d = new Date();
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
+// Shared by the HTTP liveBoard route AND every mutation below. Extracting
+// this means "what does the board look like right now" is defined in
+// exactly one place — the REST response and the Socket.IO broadcast can
+// never quietly drift out of sync with each other.
+async function fetchBoard(organizationId, branchId) {
+  const tickets = await prisma.queueTicket.findMany({
+    where: {
+      organizationId,
+      branchId,
+      status: { in: ["waiting", "called", "serving"] },
+    },
+    orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
+    include: { customer: { select: { name: true } }, service: { select: { name: true } } },
+  });
+  return tickets.map(serialize);
+}
+
+// The single place every mutation below calls after changing ticket state.
+// Broadcasting AFTER the database write (not inside the transaction) is
+// deliberate — Socket.IO has no concept of a rollback, so if we emitted
+// before the transaction committed and it then failed, connected clients
+// would have seen a queue update that never actually happened in the DB.
+async function broadcastBoard(organizationId, branchId) {
+  const board = await fetchBoard(organizationId, branchId);
+  emitQueueUpdate(branchId.toString(), board);
 }
 
 // Check a customer in — either against an existing booking, or as a walk-in.
@@ -53,6 +108,7 @@ async function checkIn(req, res) {
 
     const newTicket = await tx.queueTicket.create({
       data: {
+        uuid: randomUUID(),
         organizationId: req.tenant.organizationId,
         branchId,
         bookingId: bookingId ? BigInt(bookingId) : null,
@@ -86,6 +142,8 @@ async function checkIn(req, res) {
   // created. Queueing/logging notification failures separately (see
   // notifications table) is the right place for that concern — stubbed here.
   // await sendNotification(ticket.customerId, `Your queue number is ${ticket.ticketNumber}`);
+
+  await broadcastBoard(req.tenant.organizationId, branchId);
 
   return res.status(201).json(serialize(ticket));
 }
@@ -125,13 +183,23 @@ async function callNext(req, res) {
       },
     });
 
-    await tx.queueHistory.update({
+    // upsert, not update: a queue_history row SHOULD always exist (checkIn
+    // creates it atomically alongside the ticket), but real production data
+    // can have edge cases that predate your code — e.g. a row inserted by
+    // hand, or a future data-migration gap. update() would throw "record
+    // not found" and abort the whole transaction over a single missing
+    // history row; upsert() heals it instead, using the ticket's own
+    // createdAt as a reasonable enteredQueueAt if history never existed.
+    await tx.queueHistory.upsert({
       where: { queueTicketId: nextTicket.id },
-      data: { calledAt: new Date() },
+      update: { calledAt: new Date() },
+      create: { queueTicketId: nextTicket.id, enteredQueueAt: nextTicket.createdAt, calledAt: new Date() },
     });
 
     return t;
   });
+
+  await broadcastBoard(req.tenant.organizationId, branchId);
 
   return res.json(serialize(updated));
 }
@@ -150,18 +218,21 @@ async function markServing(req, res) {
       where: { id: ticketId },
       data: { status: "serving" },
     });
-    await tx.queueHistory.update({
+    await tx.queueHistory.upsert({
       where: { queueTicketId: ticketId },
-      data: { serviceStartAt: new Date() },
+      update: { serviceStartAt: new Date() },
+      create: { queueTicketId: ticketId, enteredQueueAt: ticket.createdAt, serviceStartAt: new Date() },
     });
     return t;
   });
+
+  await broadcastBoard(req.tenant.organizationId, ticket.branchId);
 
   return res.json(serialize(updated));
 }
 
 // Staff marks a ticket complete — this is where wait_time_seconds and
-// service_time_seconds (used for every report in Phase 7) actually get computed.
+// service_time_seconds (used for every report in Phase 14) actually get computed.
 async function completeTicket(req, res) {
   const ticketId = BigInt(req.params.id);
 
@@ -185,34 +256,37 @@ async function completeTicket(req, res) {
       where: { id: ticketId },
       data: { status: "completed" },
     });
-    await tx.queueHistory.update({
+    await tx.queueHistory.upsert({
       where: { queueTicketId: ticketId },
-      data: { completedAt: now, waitTimeSeconds, serviceTimeSeconds },
+      update: { completedAt: now, waitTimeSeconds, serviceTimeSeconds },
+      create: {
+        queueTicketId: ticketId,
+        enteredQueueAt: ticket.createdAt,
+        completedAt: now,
+        waitTimeSeconds,
+        serviceTimeSeconds,
+      },
     });
     return t;
   });
 
+  await broadcastBoard(req.tenant.organizationId, ticket.branchId);
+
   return res.json(serialize(updated));
 }
 
-// The live queue board — what staff/customers watch update in real time.
-// Polling (client re-fetches this every few seconds) is the right MVP
-// choice; don't reach for WebSockets until this simple version feels slow.
+// The live queue board over plain HTTP — used for the initial page load
+// (a client fetches this once to populate its starting state), then relies
+// on the "queue:update" Socket.IO event for everything after that. Keeping
+// this endpoint around even with Socket.IO wired in matters: a client that
+// hasn't connected its socket yet (or reconnects after a drop) still needs
+// a way to get the CURRENT state, not just future updates.
 async function liveBoard(req, res) {
   const branchId = req.query.branchId ? BigInt(req.query.branchId) : req.tenant.branchId;
   if (!branchId) return res.status(400).json({ error: "branchId is required" });
 
-  const tickets = await prisma.queueTicket.findMany({
-    where: {
-      organizationId: req.tenant.organizationId,
-      branchId,
-      status: { in: ["waiting", "called", "serving"] },
-    },
-    orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
-    include: { customer: { select: { name: true } }, service: { select: { name: true } } },
-  });
-
-  return res.json(tickets.map(serialize));
+  const board = await fetchBoard(req.tenant.organizationId, branchId);
+  return res.json(board);
 }
 
 function serialize(ticket) {
@@ -228,4 +302,4 @@ function serialize(ticket) {
   };
 }
 
-module.exports = { checkIn, callNext, markServing, completeTicket, liveBoard };
+module.exports = { checkIn, callNext, markServing, completeTicket, liveBoard, createCounter };

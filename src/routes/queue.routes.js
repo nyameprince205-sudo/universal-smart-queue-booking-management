@@ -9,6 +9,7 @@ const {
   markServing,
   completeTicket,
   liveBoard,
+  createCounter,
 } = require("../controllers/queue.controller");
 
 const router = express.Router();
@@ -16,6 +17,7 @@ const router = express.Router();
 router.use(authenticate, requireTenant);
 
 router.get("/board", asyncHandler(liveBoard));
+router.post("/counters", requireRole("ORG_ADMIN"), asyncHandler(createCounter));
 router.post("/check-in", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(checkIn));
 router.post("/call-next", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(callNext));
 router.patch("/:id/serving", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(markServing));

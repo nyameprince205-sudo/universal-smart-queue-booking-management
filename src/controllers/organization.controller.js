@@ -1,5 +1,6 @@
 const prisma = require("../config/db");
 const { randomUUID } = require("crypto");
+const { toJSONSafe } = require("../utils/serialize");
 
 // IMPORTANT ARCHITECTURAL NOTE, worth reading before anything else:
 // `organizations` is the ONE table in this entire schema that does NOT have
@@ -152,12 +153,14 @@ function slugify(name) {
     .replace(/(^-|-$)/g, "");
 }
 
+// Now using the generic toJSONSafe() helper instead of listing fields by
+// hand — that manual approach already missed one BigInt field once
+// (organization_settings.id, separate from organization_settings.organizationId),
+// which is exactly the failure mode a generic recursive converter avoids:
+// it doesn't need to know your schema's field names, so there's nothing
+// left to forget.
 function serializeOrg(org) {
-  return {
-    ...org,
-    id: org.id.toString(),
-    businessTypeId: org.businessTypeId,
-  };
+  return toJSONSafe(org);
 }
 
 module.exports = {

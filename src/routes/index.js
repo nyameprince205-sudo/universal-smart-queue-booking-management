@@ -26,5 +26,6 @@ router.use("/customers", require("./customer.routes")); // <- Phase 9, mounted n
 router.use("/bookings", require("./booking.routes")); // <- Phase 10, mounted now
 router.use("/queue", require("./queue.routes")); // <- Phase 11, mounted now
 router.use("/notifications", require("./notification.routes")); // <- Phase 12, mounted now
+router.use("/subscriptions", require("./subscription.routes")); // <- Phase 13, mounted now
 
 module.exports = router;

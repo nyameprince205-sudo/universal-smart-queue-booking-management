@@ -23,7 +23,13 @@ app.use(cors());
 app.use(morgan("dev"));
 
 // 3. Body parsers must run before any route that reads req.body.
-app.use(express.json());
+// The `verify` hook stashes the exact raw bytes onto req.rawBody BEFORE
+// Express parses them into JSON — the Paystack webhook needs those exact
+// original bytes to verify the signature (a re-serialized JSON.stringify
+// of the parsed body can differ in whitespace/key order and would make
+// every signature check fail). Every other route ignores req.rawBody
+// entirely; this costs nothing for routes that don't need it.
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: true }));
 
 // --- Routes ---

@@ -4,6 +4,7 @@ const authenticate = require("../middleware/auth.middleware");
 const requireTenant = require("../middleware/tenant.middleware");
 const requireRole = require("../middleware/role.middleware");
 const {
+  getPublicOrganization,
   createOrganization,
   listOrganizations,
   getOrganization,
@@ -13,6 +14,10 @@ const {
 } = require("../controllers/organization.controller");
 
 const router = express.Router();
+
+// --- Public: no auth at all — see the big comment on getPublicOrganization
+// itself for why this is the one deliberately open read in this file. ---
+router.get("/public/:slug", asyncHandler(getPublicOrganization));
 
 // --- Platform-level routes: SUPER_ADMIN only, deliberately NO requireTenant ---
 // A Super Admin's JWT has organizationId: null — if requireTenant ran here,

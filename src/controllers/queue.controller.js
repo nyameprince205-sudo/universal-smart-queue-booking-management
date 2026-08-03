@@ -32,6 +32,31 @@ async function createCounter(req, res) {
   });
 }
 
+// Same gap as the comment above about createCounter: nothing lets a caller
+// find out WHICH counters already exist for a branch. Phase 15's Staff
+// Queue Console needs exactly this (to show a "which counter are you at"
+// dropdown before calling the next customer), so it's added now rather
+// than worked around in the frontend with a hardcoded/typed-in counter id.
+async function listCounters(req, res) {
+  const branchId = req.query.branchId ? BigInt(req.query.branchId) : req.tenant.branchId;
+  if (!branchId) return res.status(400).json({ error: "branchId is required" });
+
+  const counters = await prisma.serviceCounter.findMany({
+    where: { organizationId: req.tenant.organizationId, branchId },
+    orderBy: { name: "asc" },
+  });
+
+  return res.json(
+    counters.map((c) => ({
+      id: c.id.toString(),
+      organizationId: c.organizationId.toString(),
+      branchId: c.branchId.toString(),
+      name: c.name,
+      status: c.status,
+    }))
+  );
+}
+
 function todayDateOnly() {
   // MySQL DATE columns don't care about time-of-day, so we normalize to
   // midnight UTC here. In production you'd use the organization's configured
@@ -318,4 +343,4 @@ function serialize(ticket) {
   };
 }
 
-module.exports = { checkIn, callNext, markServing, completeTicket, liveBoard, createCounter };
+module.exports = { checkIn, callNext, markServing, completeTicket, liveBoard, createCounter, listCounters };

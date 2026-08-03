@@ -21,6 +21,43 @@ const { toJSONSafe } = require("../utils/serialize");
 // business see another's data, so the split is enforced by which
 // middleware chain a route uses, not by an if-check inside the controller.
 
+// ---- Public (no auth) — customer-facing discovery ----
+
+// A customer needs to find an organization's active branches and services
+// BEFORE they can book anything — but every other route in this file
+// requires either SUPER_ADMIN or an authenticated tenant staff member.
+// This is the ONE deliberately public read in the whole organizations API:
+// enough to build a booking page (name, active branches, active services),
+// nothing sensitive (no email, no settings, no counts of inactive/deleted
+// records that could leak business info to a competitor poking at the URL).
+async function getPublicOrganization(req, res) {
+  const organization = await prisma.organization.findUnique({
+    where: { slug: req.params.slug },
+    include: {
+      branches: { where: { status: "active" } },
+      services: { where: { isActive: true } },
+    },
+  });
+
+  // A cancelled organization is treated the same as "doesn't exist" here —
+  // there's no reason a public storefront page should still resolve for a
+  // business that's shut down on the platform.
+  if (!organization || organization.status === "cancelled") {
+    return res.status(404).json({ error: "Organization not found" });
+  }
+
+  return res.json(
+    toJSONSafe({
+      id: organization.id,
+      name: organization.name,
+      slug: organization.slug,
+      logoUrl: organization.logoUrl,
+      branches: organization.branches,
+      services: organization.services,
+    })
+  );
+}
+
 // ---- Platform-level (Super Admin) ----
 
 async function createOrganization(req, res) {
@@ -164,6 +201,7 @@ function serializeOrg(org) {
 }
 
 module.exports = {
+  getPublicOrganization,
   createOrganization,
   listOrganizations,
   getOrganization,

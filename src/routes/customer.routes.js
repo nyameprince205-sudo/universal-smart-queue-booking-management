@@ -11,6 +11,7 @@ const {
   getMyOrganizationHistory,
   lookupByPhone,
   quickRegister,
+  forgotPassword,
 } = require("../controllers/customer.controller");
 
 const router = express.Router();
@@ -19,6 +20,12 @@ const router = express.Router();
 router.post("/register", asyncHandler(register));
 router.post("/login", asyncHandler(login));
 router.post("/refresh", asyncHandler(refresh));
+// Task 1: request side is customer-specific (keyed by phone, not email —
+// see the comment on forgotPassword itself for why). The RESET side is
+// shared at POST /auth/reset-password — the token itself already carries
+// which account type it belongs to, so there's no need for a second
+// reset-password endpoint here too.
+router.post("/forgot-password", asyncHandler(forgotPassword));
 
 // authenticate() works unchanged here — it just verifies the JWT signature
 // and expiry, regardless of whether the token was signed for a user or a

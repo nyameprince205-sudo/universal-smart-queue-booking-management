@@ -7,12 +7,19 @@ const {
   listBookings,
   createBooking,
   createMyBooking,
+  createGuestBooking,
   listMyBookings,
   updateBookingStatus,
   cancelMyBooking,
 } = require("../controllers/booking.controller");
 
 const router = express.Router();
+
+// --- Task 4: Guest checkout — no auth at all, on purpose. A guest never
+// had a token to attach in the first place; organizationId/branchId/
+// serviceId ownership is validated inside createBookingCore exactly the
+// way the authenticated customer path already is. ---
+router.post("/guest", asyncHandler(createGuestBooking));
 
 // --- Customer self-service: no tenant middleware (a customer isn't scoped
 // to one organization) — organizationId comes from the request body and is

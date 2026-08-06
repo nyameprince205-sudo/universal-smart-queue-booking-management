@@ -149,6 +149,21 @@ model User {
   phone          String?    @db.VarChar(30)
   passwordHash   String     @map("password_hash") @db.VarChar(255)
   status         UserStatus @default(active)
+  // Defaults to true (not false) specifically so this migration does NOT
+  // lock out the existing seeded users, none of whom ever went through a
+  // verification flow (because no flow existed until now — see
+  // AuthToken below). Only accounts created through a FUTURE "invite
+  // staff" endpoint would ever start out false. See auth.controller.js
+  // login() for how this gate actually gets enforced.
+  emailVerified  Boolean    @default(true) @map("email_verified")
+  // Null means "password has never been reset since account creation" —
+  // nothing to compare against, so refresh() never rejects a token for a
+  // user who's never used this feature. Set on every successful password
+  // reset; auth.controller.js's refresh() compares this against the
+  // refresh token's issued-at time to force re-login (see the comment
+  // there for why THIS is the safer place to enforce it, not the
+  // high-traffic authenticate() middleware).
+  passwordChangedAt DateTime? @map("password_changed_at")
   lastLoginAt    DateTime?  @map("last_login_at")
   createdAt      DateTime   @default(now()) @map("created_at")
   updatedAt      DateTime   @updatedAt @map("updated_at")
@@ -180,6 +195,12 @@ model Customer {
   phone        String         @unique @db.VarChar(30)
   email        String?        @db.VarChar(150)
   passwordHash String?        @map("password_hash") @db.VarChar(255)
+  // Same mechanism as User.passwordChangedAt — null until the customer
+  // ever resets a password. A customer with no password at all (the
+  // normal guest/quick-registered case) simply never has this set, and
+  // never goes through password reset in the first place since there's
+  // no password to forget.
+  passwordChangedAt DateTime? @map("password_changed_at")
   status       CustomerStatus @default(active)
   createdAt    DateTime       @default(now()) @map("created_at")
   updatedAt    DateTime       @updatedAt @map("updated_at")
@@ -535,4 +556,46 @@ model AuditLog {
 
   @@index([organizationId, createdAt])
   @@map("audit_logs")
+}
+
+// ------------------------------------------------------------
+// Password reset + email verification — shared by BOTH identity systems
+// (staff/admin `users` and self-registered `customers`), one table instead
+// of two near-duplicates. Deliberately NOT a foreign key to either table —
+// ownerType + ownerId is a polymorphic reference (same pattern
+// Notification already uses for recipientType/recipientId), because a
+// single FK column can't point at two different tables. This does mean the
+// database itself won't enforce that ownerId is real; the application
+// layer is responsible for that, same tradeoff Notification already made.
+//
+// Security properties this table exists to provide:
+//   - tokenHash, never the raw token — if this table ever leaked, nobody
+//     could reconstruct a usable token from it (same principle as
+//     passwordHash never storing a real password).
+//   - expiresAt — every token is time-boxed; expired tokens are rejected
+//     even if otherwise well-formed.
+//   - usedAt — makes a token single-use; once consumed, using it again is
+//     rejected even if it hasn't expired yet.
+model AuthToken {
+  id          BigInt        @id @default(autoincrement())
+  tokenHash   String        @unique @db.VarChar(64) // sha256 hex digest = 64 chars, always
+  type        AuthTokenType
+  ownerType   AuthOwnerType @map("owner_type")
+  ownerId     BigInt        @map("owner_id")
+  expiresAt   DateTime      @map("expires_at")
+  usedAt      DateTime?     @map("used_at")
+  createdAt   DateTime      @default(now()) @map("created_at")
+
+  @@index([ownerType, ownerId, type])
+  @@map("auth_tokens")
+}
+
+enum AuthTokenType {
+  password_reset
+  email_verification
+}
+
+enum AuthOwnerType {
+  user
+  customer
 }

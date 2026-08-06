@@ -123,6 +123,73 @@ async function createBooking(req, res) {
   return res.status(201).json(serialize(booking));
 }
 
+// ---- Task 4: Guest checkout — book with NO account at all ----
+// Deliberately does NOT import/reuse customer.controller.js's quickRegister
+// — that function is wired to req.tenant (an authenticated staff member's
+// org) and upserts a CustomerOrganization row using it, which doesn't
+// exist for an unauthenticated public request. Rather than reshape a
+// staff-only function to also handle a public caller (risking a bug in a
+// path Task 6 says must keep working), this duplicates the small
+// find-or-create-by-phone snippet locally — a few lines repeated is a much
+// smaller risk than entangling two different trust levels in one function.
+async function createGuestBooking(req, res) {
+  const {
+    organizationId,
+    branchId,
+    serviceId,
+    bookingDate,
+    bookingTime,
+    partySize,
+    notes,
+    customerName,
+    customerPhone,
+    customerEmail,
+  } = req.body;
+
+  if (!organizationId || !branchId || !serviceId || !bookingDate || !bookingTime || !customerName || !customerPhone) {
+    return res.status(400).json({
+      error:
+        "organizationId, branchId, serviceId, bookingDate, bookingTime, customerName, and customerPhone are required",
+    });
+  }
+
+  // Same find-or-create-by-phone behavior as staff quick-register: a
+  // returning guest (same phone number, whether or not they ever made an
+  // account) is recognized as the same customer, not duplicated.
+  let customer = await prisma.customer.findUnique({ where: { phone: customerPhone } });
+  if (!customer) {
+    customer = await prisma.customer.create({
+      data: {
+        uuid: randomUUID(),
+        name: customerName,
+        phone: customerPhone,
+        email: customerEmail || null,
+        status: "active",
+        // No passwordHash — exactly like a staff quick-registered walk-in,
+        // this is a platform identity for the booking to point to, not an
+        // account. Task 4 is explicit that creating an account is OPTIONAL;
+        // this guest can still register properly later using this same
+        // phone number (customer.controller.js's register() looks up by
+        // phone too) and everything under this identity — this booking
+        // included — becomes visible in their account from that point on.
+      },
+    });
+  }
+
+  const booking = await createBookingCore({
+    organizationId: BigInt(organizationId),
+    branchId: BigInt(branchId),
+    customerId: customer.id,
+    serviceId: BigInt(serviceId),
+    bookingDate,
+    bookingTime,
+    partySize,
+    notes,
+  });
+
+  return res.status(201).json(serialize(booking));
+}
+
 // ---- Customer: book for themselves ----
 // No req.tenant here at all — customer routes aren't tenant-scoped, so the
 // organization they want to book with is explicit input, validated by
@@ -245,6 +312,7 @@ module.exports = {
   listBookings,
   createBooking,
   createMyBooking,
+  createGuestBooking,
   listMyBookings,
   updateBookingStatus,
   cancelMyBooking,

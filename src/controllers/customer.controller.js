@@ -2,6 +2,8 @@ const bcrypt = require("bcryptjs");
 const { randomUUID } = require("crypto");
 const prisma = require("../config/db");
 const { signCustomerAccessToken, signCustomerRefreshToken, verifyRefreshToken } = require("../utils/jwt");
+const { issueToken } = require("../services/authToken.service");
+const { sendEmail } = require("../services/notification.service");
 
 // ---- Customer self-service (public, then self-authenticated) ----
 // Notice NONE of these functions take an organizationId anywhere — that's
@@ -84,6 +86,13 @@ async function refresh(req, res) {
   const customer = await prisma.customer.findUnique({ where: { id: BigInt(payload.sub) } });
   if (!customer || customer.status !== "active") {
     return res.status(401).json({ error: "Invalid or expired refresh token" });
+  }
+
+  // Same mechanism as auth.controller.js's refresh() — see the comment
+  // there for the full reasoning. A customer who resets their password
+  // gets this same "old refresh tokens stop working" protection.
+  if (customer.passwordChangedAt && payload.iat * 1000 < customer.passwordChangedAt.getTime()) {
+    return res.status(401).json({ error: "Your password was changed. Please log in again." });
   }
 
   return res.json({ accessToken: signCustomerAccessToken(customer) });
@@ -183,6 +192,42 @@ function serializeCustomer(customer) {
   };
 }
 
+// ---- Task 1 (customer side): Forgot Password ----
+// Uses PHONE, not email — a customer's email is optional (see
+// Customer.email in schema.prisma) and phone is what they actually log in
+// with (see login() above), so phone is the identifier that's guaranteed
+// to exist for every customer who has a password to forget in the first
+// place. Actual reset submission still goes through the SHARED
+// /auth/reset-password endpoint (auth.controller.js) — only the request
+// step differs by account type.
+async function forgotPassword(req, res) {
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ error: "phone is required" });
+
+  const customer = await prisma.customer.findUnique({ where: { phone } });
+
+  // Same non-enumeration principle as the staff-side version: identical
+  // response whether or not the phone number is registered, and whether
+  // or not that customer even has a password set (a guest/quick-registered
+  // customer has no passwordHash — nothing to reset, but we still don't
+  // want the response to reveal that distinction to the caller).
+  if (customer && customer.status === "active" && customer.passwordHash) {
+    const rawToken = await issueToken({ type: "password_reset", ownerType: "customer", ownerId: customer.id });
+    const resetLink = `${process.env.FRONTEND_URL || "http://localhost:5173"}/reset-password?token=${rawToken}`;
+    const message = `Reset your password: ${resetLink} (this link expires in 30 minutes)`;
+    // Email if they have one on file, otherwise fall back to the phone
+    // number itself via the same stubbed sender pattern used elsewhere —
+    // see notification.service.js's SENDERS.
+    if (customer.email) {
+      await sendEmail(customer.email, message);
+    } else {
+      await sendEmail(customer.phone, message); // stub logs it either way; a real SMS provider would go here instead
+    }
+  }
+
+  return res.json({ message: "If an account exists with that phone number, a password reset link has been sent." });
+}
+
 module.exports = {
   register,
   login,
@@ -191,4 +236,5 @@ module.exports = {
   getMyOrganizationHistory,
   lookupByPhone,
   quickRegister,
+  forgotPassword,
 };

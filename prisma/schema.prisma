@@ -578,7 +578,7 @@ model AuditLog {
 //     rejected even if it hasn't expired yet.
 model AuthToken {
   id          BigInt        @id @default(autoincrement())
-  tokenHash   String        @unique @db.VarChar(64) // sha256 hex digest = 64 chars, always
+  tokenHash   String        @unique @db.VarChar(64) @map("token_hash")
   type        AuthTokenType
   ownerType   AuthOwnerType @map("owner_type")
   ownerId     BigInt        @map("owner_id")

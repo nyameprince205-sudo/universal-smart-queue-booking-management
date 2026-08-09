@@ -29,5 +29,6 @@ router.use("/notifications", require("./notification.routes")); // <- Phase 12, 
 router.use("/subscriptions", require("./subscription.routes")); // <- Phase 13, mounted now
 router.use("/reports", require("./report.routes")); // <- Phase 14, mounted now
 router.use("/business-types", require("./businessType.routes")); // <- Phase 15 Step 6, mounted now
+router.use("/staff", require("./staff.routes"));
 
 module.exports = router;

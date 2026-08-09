@@ -243,6 +243,20 @@ async function listMyBookings(req, res) {
       organization: { select: { name: true } },
       branch: { select: { name: true } },
       service: { select: { name: true } },
+      // Phase 16 addition: a booking that's been checked in has a real
+      // live queue ticket behind it (see queue.controller.js's checkIn,
+      // which sets a booking's status to "checked_in" the moment this is
+      // created) — without this, a customer's own booking list had no way
+      // to lead them to their live tracking page; they could only ever
+      // reach it via the SMS link sent at check-in time, which is easy to
+      // lose. `take: 1` + newest-first because a booking realistically has
+      // at most one MEANINGFUL ticket at a time, even though the relation
+      // is technically one-to-many.
+      queueTickets: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { uuid: true, status: true, ticketNumber: true },
+      },
     },
   });
 

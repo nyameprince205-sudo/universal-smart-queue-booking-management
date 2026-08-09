@@ -5,6 +5,7 @@ const requireTenant = require("../middleware/tenant.middleware");
 const requireRole = require("../middleware/role.middleware");
 const {
   getPublicOrganization,
+  searchPublicOrganizations,
   createOrganization,
   listOrganizations,
   getOrganization,
@@ -17,6 +18,10 @@ const router = express.Router();
 
 // --- Public: no auth at all — see the big comment on getPublicOrganization
 // itself for why this is the one deliberately open read in this file. ---
+// /public (search/list) registered before /public/:slug (one org's detail)
+// purely for readability here — Express has no ambiguity between them
+// either way, since they're different path shapes (one segment vs two).
+router.get("/public", asyncHandler(searchPublicOrganizations));
 router.get("/public/:slug", asyncHandler(getPublicOrganization));
 
 // --- Platform-level routes: SUPER_ADMIN only, deliberately NO requireTenant ---

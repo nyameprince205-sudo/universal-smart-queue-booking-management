@@ -1,5 +1,7 @@
 const express = require("express");
 const prisma = require("../config/db");
+const asyncHandler = require("../utils/asyncHandler");
+const { trackTicket } = require("../controllers/queue.controller");
 
 const router = express.Router();
 
@@ -16,6 +18,18 @@ router.get("/health", async (req, res) => {
     return res.status(503).json({ status: "error", database: "unreachable" });
   }
 });
+
+// Phase 16, Module 1: registered here — deliberately BEFORE the "/queue"
+// mount below — because queue.routes.js applies `authenticate,
+// requireTenant` to its ENTIRE router (see the router.use() at its top).
+// This is the one queue-related endpoint that must stay public (a guest
+// customer tracking their own ticket has no login at all), so it can't
+// live inside that file without either breaking its blanket auth or
+// requiring a bigger restructure of a file that already works. Express
+// matches routes in registration order, so putting this specific route
+// here means it's handled before the /queue mount is ever reached for a
+// request to this exact path.
+router.get("/queue/track/:uuid", asyncHandler(trackTicket));
 
 // Feature routes, mounted phase by phase:
 router.use("/auth", require("./auth.routes")); // <- Phase 6, mounted now

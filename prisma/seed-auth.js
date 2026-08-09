@@ -18,7 +18,7 @@ async function main() {
   const emails = [
     "superadmin@queueplatform.example.com",
     "kwame@oceanview.example.com",
-    "ama@oceanview.example.com",
+    "@oceanview.example.com",
     "yaw@accragh.example.com",
     "efua@accragh.example.com",
   ];
@@ -42,7 +42,7 @@ async function main() {
 main()
   .catch((err) => {
     console.error(err);
-    process.exit(1);
+    process.examait(1);
   })
   .finally(async () => {
     await prisma.$disconnect();

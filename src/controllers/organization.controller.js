@@ -58,6 +58,37 @@ async function getPublicOrganization(req, res) {
   );
 }
 
+// Phase 16, Module 3 addition: a customer needs to FIND an organization
+// before they can even get to getPublicOrganization above — until now the
+// only way to reach a business's booking page was already having its
+// direct /book/:slug link (a deliberate earlier design choice, since
+// reversed based on real usage: a platform with many businesses on it
+// needs an in-app way to search/browse them, not just shareable links).
+// Same public trust boundary as getPublicOrganization — name, slug, logo,
+// business type only, nothing sensitive, and the same `status !==
+// cancelled` exclusion so a shut-down business doesn't show up to browse
+// any more than its direct link still resolves.
+async function searchPublicOrganizations(req, res) {
+  const search = req.query.search?.trim();
+
+  const organizations = await prisma.organization.findMany({
+    where: {
+      status: { not: "cancelled" },
+      ...(search ? { name: { contains: search } } : {}),
+    },
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+      logoUrl: true,
+      businessType: { select: { name: true } },
+    },
+    orderBy: { name: "asc" },
+  });
+
+  return res.json(toJSONSafe(organizations));
+}
+
 // ---- Platform-level (Super Admin) ----
 
 async function createOrganization(req, res) {
@@ -202,6 +233,7 @@ function serializeOrg(org) {
 
 module.exports = {
   getPublicOrganization,
+  searchPublicOrganizations,
   createOrganization,
   listOrganizations,
   getOrganization,

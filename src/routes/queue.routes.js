@@ -8,6 +8,7 @@ const {
   callNext,
   markServing,
   completeTicket,
+  markMissed,
   liveBoard,
   createCounter,
   listCounters,
@@ -24,5 +25,6 @@ router.post("/check-in", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(checkIn
 router.post("/call-next", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(callNext));
 router.patch("/:id/serving", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(markServing));
 router.patch("/:id/complete", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(completeTicket));
+router.patch("/:id/missed", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(markMissed));
 
 module.exports = router;

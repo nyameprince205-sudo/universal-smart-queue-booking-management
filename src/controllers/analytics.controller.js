@@ -374,6 +374,135 @@ async function getRevenueReport(req, res) {
   );
 }
 
+// ------------------------------------------------------------
+// Module 7: Executive Dashboard — deliberately NOT date-range-based like
+// everything above it. This is a "what's happening RIGHT NOW" view (live
+// queues, who's currently serving, who's currently waiting), so it always
+// looks at the current moment plus today's completed activity — a Super
+// Admin or Org Admin opening this expects to see the current state of
+// their business, not a report they have to pick dates for first.
+// ------------------------------------------------------------
+
+function todayRangeUTC() {
+  const d = new Date();
+  const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
+  return { start, end };
+}
+
+// A branch is flagged as "overloaded" using two simple, documented
+// thresholds — more than 5 people currently waiting, OR an average wait
+// today past 30 minutes. Not a sophisticated model, but a real, legible
+// rule an Org Admin can understand and act on, rather than an opaque
+// score. Easy to tune later if these numbers turn out wrong in practice.
+const OVERLOAD_WAITING_THRESHOLD = 5;
+const OVERLOAD_WAIT_SECONDS_THRESHOLD = 1800; // 30 minutes
+
+async function getExecutiveSummary(req, res) {
+  const organizationId = req.tenant.organizationId;
+  const { start, end } = todayRangeUTC();
+
+  const [branches, allActiveTickets, todaysTickets, todaysCompletedBookings] = await Promise.all([
+    prisma.branch.findMany({ where: { organizationId }, select: { id: true, name: true } }),
+    // "Right now" — every ticket currently in the live queue, org-wide.
+    prisma.queueTicket.findMany({
+      where: { organizationId, status: { in: ["waiting", "called", "serving"] } },
+      select: { branchId: true, status: true, handledByUserId: true },
+    }),
+    // Today's full activity, for the averages/counts below.
+    prisma.queueTicket.findMany({
+      where: { organizationId, queueDate: { gte: start, lte: end } },
+      select: {
+        branchId: true,
+        status: true,
+        handledByUserId: true,
+        history: { select: { waitTimeSeconds: true, serviceTimeSeconds: true } },
+      },
+    }),
+    prisma.booking.findMany({
+      where: { organizationId, bookingDate: { gte: start, lte: end }, status: "completed", deletedAt: null },
+      select: { branchId: true, serviceId: true, service: { select: { name: true, price: true } } },
+    }),
+  ]);
+
+  const activeCounters = await prisma.serviceCounter.count({ where: { organizationId, status: "open" } });
+
+  const customersWaiting = allActiveTickets.filter((t) => t.status === "waiting").length;
+  const customersServing = allActiveTickets.filter((t) => t.status === "serving").length;
+  const customersCompletedToday = todaysTickets.filter((t) => t.status === "completed").length;
+  const activeStaffIds = new Set(allActiveTickets.map((t) => t.handledByUserId).filter(Boolean).map((id) => id.toString()));
+
+  const waitTimesToday = todaysTickets.map((t) => t.history?.waitTimeSeconds).filter((v) => v != null);
+  const serviceTimesToday = todaysTickets.map((t) => t.history?.serviceTimeSeconds).filter((v) => v != null);
+  const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, v) => a + v, 0) / arr.length) : null);
+
+  // Branch ranking — reuses the SAME per-branch shape as Module 5's branch
+  // comparison, but scoped to today only and sorted by tickets served, so
+  // "ranking" actually means something (most active branch first).
+  const branchRanking = branches
+    .map((branch) => {
+      const branchActiveTickets = allActiveTickets.filter((t) => t.branchId === branch.id);
+      const branchTodayTickets = todaysTickets.filter((t) => t.branchId === branch.id);
+      const branchWaitTimes = branchTodayTickets.map((t) => t.history?.waitTimeSeconds).filter((v) => v != null);
+      const waiting = branchActiveTickets.filter((t) => t.status === "waiting").length;
+      const averageWaitTimeSeconds = branchWaitTimes.length
+        ? Math.round(branchWaitTimes.reduce((a, v) => a + v, 0) / branchWaitTimes.length)
+        : null;
+
+      return {
+        branchId: branch.id,
+        branchName: branch.name,
+        customersWaiting: waiting,
+        ticketsServedToday: branchTodayTickets.filter((t) => t.status === "completed").length,
+        averageWaitTimeSeconds,
+        // See the constants above for what these thresholds mean and why.
+        overloaded: waiting > OVERLOAD_WAITING_THRESHOLD || (averageWaitTimeSeconds || 0) > OVERLOAD_WAIT_SECONDS_THRESHOLD,
+      };
+    })
+    .sort((a, b) => b.ticketsServedToday - a.ticketsServedToday);
+
+  // Service ranking — today's completed bookings only, most-booked first.
+  const serviceCounts = new Map();
+  let todaysRevenue = 0;
+  for (const b of todaysCompletedBookings) {
+    const key = b.serviceId.toString();
+    if (!serviceCounts.has(key)) serviceCounts.set(key, { serviceId: b.serviceId, serviceName: b.service.name, count: 0 });
+    serviceCounts.get(key).count += 1;
+    todaysRevenue += b.service.price ? parseFloat(b.service.price.toString()) : 0;
+  }
+  const serviceRanking = Array.from(serviceCounts.values()).sort((a, b) => b.count - a.count);
+
+  const overloadedBranches = branchRanking.filter((b) => b.overloaded);
+
+  return res.json(
+    toJSONSafe({
+      generatedAt: new Date().toISOString(),
+      live: {
+        customersWaiting,
+        customersServing,
+        activeStaffCount: activeStaffIds.size,
+        activeCounters,
+      },
+      today: {
+        customersCompleted: customersCompletedToday,
+        averageWaitTimeSeconds: avg(waitTimesToday),
+        averageServiceTimeSeconds: avg(serviceTimesToday),
+        revenue: round1(todaysRevenue),
+      },
+      branchRanking,
+      serviceRanking,
+      alerts: overloadedBranches.map((b) => ({
+        branchId: b.branchId,
+        branchName: b.branchName,
+        reason:
+          b.customersWaiting > OVERLOAD_WAITING_THRESHOLD
+            ? `${b.customersWaiting} customers currently waiting`
+            : `Average wait today is ${Math.round((b.averageWaitTimeSeconds || 0) / 60)} minutes`,
+      })),
+    })
+  );
+}
+
 module.exports = {
   getServicePopularity,
   getPeakHours,
@@ -381,4 +510,5 @@ module.exports = {
   getStaffPerformance,
   getBranchComparison,
   getRevenueReport,
+  getExecutiveSummary,
 };

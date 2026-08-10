@@ -18,7 +18,7 @@ async function main() {
   const emails = [
     "superadmin@queueplatform.example.com",
     "kwame@oceanview.example.com",
-    "@oceanview.example.com",
+    "ama@oceanview.example.com",
     "yaw@accragh.example.com",
     "efua@accragh.example.com",
   ];

@@ -10,6 +10,7 @@ const {
   getStaffPerformance,
   getBranchComparison,
   getRevenueReport,
+  getExecutiveSummary,
 } = require("../controllers/analytics.controller");
 
 const router = express.Router();
@@ -22,5 +23,6 @@ router.get("/trends", authenticate, requireTenant, requireRole("ORG_ADMIN"), asy
 router.get("/staff-performance", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(getStaffPerformance));
 router.get("/branches", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(getBranchComparison));
 router.get("/revenue", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(getRevenueReport));
+router.get("/executive-summary", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(getExecutiveSummary));
 
 module.exports = router;

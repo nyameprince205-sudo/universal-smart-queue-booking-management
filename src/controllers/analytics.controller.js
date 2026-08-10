@@ -503,6 +503,148 @@ async function getExecutiveSummary(req, res) {
   );
 }
 
+// ------------------------------------------------------------
+// Phase 18, Module 1/2/3: Dashboard homepage — 14 KPI cards with
+// trend-vs-yesterday, plus 7-day chart data for Module 2's charts, all in
+// ONE call (Module 13 explicitly asks to "reduce unnecessary API
+// requests" — building that in from the start here rather than retrofitting
+// it later).
+// ------------------------------------------------------------
+
+function dayBounds(daysAgo) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - daysAgo);
+  const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
+  return { start, end };
+}
+
+// Null (not 0, not Infinity) when yesterday's value was 0 or missing —
+// "up 400%" from a base of zero is a real number but a misleading thing to
+// show on a KPI card; the frontend shows "—" instead of a trend in that case.
+function computeTrend(todayValue, yesterdayValue) {
+  if (yesterdayValue == null || yesterdayValue === 0) return null;
+  return round1(((todayValue - yesterdayValue) / yesterdayValue) * 100);
+}
+
+// Shared by both "today" and "yesterday" below — same full-day totals
+// either way, just a different date range. Deliberately does NOT include
+// customersWaiting/customersServing (see the big comment on
+// getHomeDashboard for why those two are handled separately as pure
+// "right now" numbers with no day-bounded equivalent).
+async function computeDayStats(organizationId, dayStart, dayEnd) {
+  const [bookings, tickets] = await Promise.all([
+    prisma.booking.findMany({
+      where: { organizationId, bookingDate: { gte: dayStart, lte: dayEnd }, deletedAt: null },
+      select: { status: true },
+    }),
+    prisma.queueTicket.findMany({
+      where: { organizationId, queueDate: { gte: dayStart, lte: dayEnd } },
+      select: {
+        status: true,
+        handledByUserId: true,
+        history: { select: { waitTimeSeconds: true, serviceTimeSeconds: true } },
+      },
+    }),
+  ]);
+
+  const waitTimes = tickets.map((t) => t.history?.waitTimeSeconds).filter((v) => v != null);
+  const serviceTimes = tickets.map((t) => t.history?.serviceTimeSeconds).filter((v) => v != null);
+  const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, v) => a + v, 0) / arr.length) : null);
+
+  const customersServed = tickets.filter((t) => t.status === "completed").length;
+  const missedCustomers = tickets.filter((t) => t.status === "missed").length;
+  const activeStaffIds = new Set(tickets.map((t) => t.handledByUserId).filter(Boolean).map((id) => id.toString()));
+
+  return {
+    bookings: bookings.length,
+    queueTickets: tickets.length,
+    customersServed,
+    averageWaitTimeSeconds: avg(waitTimes),
+    averageServiceTimeSeconds: avg(serviceTimes),
+    activeStaff: activeStaffIds.size,
+    completedAppointments: bookings.filter((b) => b.status === "completed").length,
+    cancelledAppointments: bookings.filter((b) => b.status === "cancelled").length,
+    missedCustomers,
+    queueEfficiencyPercent:
+      customersServed + missedCustomers > 0 ? round1((customersServed / (customersServed + missedCustomers)) * 100) : null,
+  };
+}
+
+async function getHomeDashboard(req, res) {
+  const organizationId = req.tenant.organizationId;
+  const todayRange = dayBounds(0);
+  const yesterdayRange = dayBounds(1);
+
+  const [todayStats, yesterdayStats, liveTickets, activeCounters, activeBranches, weekTickets, weekBookings] = await Promise.all([
+    computeDayStats(organizationId, todayRange.start, todayRange.end),
+    computeDayStats(organizationId, yesterdayRange.start, yesterdayRange.end),
+    // "Right now" — see the note on computeDayStats above for why these
+    // two live numbers are kept OUT of the day-bounded stats entirely.
+    prisma.queueTicket.findMany({
+      where: { organizationId, status: { in: ["waiting", "serving"] } },
+      select: { status: true },
+    }),
+    prisma.serviceCounter.count({ where: { organizationId, status: "open" } }),
+    prisma.branch.count({ where: { organizationId, status: "active" } }),
+    // Module 2's charts: last 7 days of raw activity, fetched once here
+    // rather than making the frontend hit two more report endpoints.
+    prisma.queueTicket.findMany({
+      where: { organizationId, queueDate: { gte: dayBounds(6).start, lte: todayRange.end } },
+      select: { queueDate: true },
+    }),
+    prisma.booking.findMany({
+      where: { organizationId, bookingDate: { gte: dayBounds(6).start, lte: todayRange.end }, deletedAt: null },
+      select: { bookingDate: true },
+    }),
+  ]);
+
+  function trendCard(key, goodDirection = "up") {
+    return {
+      value: todayStats[key],
+      trendPercent: computeTrend(todayStats[key], yesterdayStats[key]),
+      goodDirection, // "up" or "down" — whether an increase is good news for THIS metric (e.g. bookings up = good, wait time up = bad)
+    };
+  }
+
+  function dayKeyRange(daysBack) {
+    const keys = [];
+    for (let i = daysBack; i >= 0; i--) keys.push(dayKey(dayBounds(i).start));
+    return keys;
+  }
+  const last7Days = dayKeyRange(6);
+  const queueActivityByDay = Object.fromEntries(last7Days.map((d) => [d, 0]));
+  for (const t of weekTickets) queueActivityByDay[dayKey(t.queueDate)] = (queueActivityByDay[dayKey(t.queueDate)] || 0) + 1;
+  const bookingsByDay = Object.fromEntries(last7Days.map((d) => [d, 0]));
+  for (const b of weekBookings) bookingsByDay[dayKey(b.bookingDate)] = (bookingsByDay[dayKey(b.bookingDate)] || 0) + 1;
+
+  return res.json(
+    toJSONSafe({
+      generatedAt: new Date().toISOString(),
+      live: {
+        customersWaiting: liveTickets.filter((t) => t.status === "waiting").length,
+        customersServing: liveTickets.filter((t) => t.status === "serving").length,
+        activeCounters,
+        activeBranches,
+      },
+      today: {
+        bookings: trendCard("bookings"),
+        queueTickets: trendCard("queueTickets"),
+        customersServed: trendCard("customersServed"),
+        averageWaitTimeSeconds: trendCard("averageWaitTimeSeconds", "down"),
+        averageServiceTimeSeconds: trendCard("averageServiceTimeSeconds", "down"),
+        activeStaff: trendCard("activeStaff"),
+        completedAppointments: trendCard("completedAppointments"),
+        cancelledAppointments: trendCard("cancelledAppointments", "down"),
+        missedCustomers: trendCard("missedCustomers", "down"),
+        queueEfficiencyPercent: trendCard("queueEfficiencyPercent"),
+      },
+      queueActivityTrend: last7Days.map((date) => ({ date, count: queueActivityByDay[date] })),
+      bookingsTrend: last7Days.map((date) => ({ date, count: bookingsByDay[date] })),
+    })
+  );
+}
+
 module.exports = {
   getServicePopularity,
   getPeakHours,
@@ -511,4 +653,5 @@ module.exports = {
   getBranchComparison,
   getRevenueReport,
   getExecutiveSummary,
+  getHomeDashboard,
 };

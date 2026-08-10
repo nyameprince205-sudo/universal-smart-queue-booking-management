@@ -1,6 +1,7 @@
 const prisma = require("../config/db");
 const { randomUUID } = require("crypto");
 const { notifyInBackground, getPreferredChannel } = require("../services/notification.service");
+const { logActivity } = require("../services/auditLog.service");
 
 // A booking's status is a proper state machine, not a free-for-all field.
 // This table is the single source of truth for "what can become what" —
@@ -30,7 +31,7 @@ function canTransition(from, to) {
 // themselves" is WHERE organizationId and customerId come from, not what
 // happens once we have them. Keeping that logic in one place means a bug
 // fix here fixes both paths at once.
-async function createBookingCore({ organizationId, branchId, customerId, serviceId, bookingDate, bookingTime, partySize, notes }) {
+async function createBookingCore({ organizationId, branchId, customerId, serviceId, bookingDate, bookingTime, partySize, notes, performedByUserId }) {
   // Validate that the branch and service actually belong to the claimed
   // organization. This matters most on the customer self-service path —
   // a customer supplies organizationId/branchId/serviceId directly in the
@@ -90,6 +91,21 @@ async function createBookingCore({ organizationId, branchId, customerId, service
     message: `Your booking for ${bookingDate} at ${bookingTime} has been received and is pending confirmation.`,
   });
 
+  // Module 4: logged ONCE here rather than in each of the three callers —
+  // same reasoning this function already existed for (one place, not three
+  // near-duplicates). performedByUserId is only ever set on the staff path
+  // (createBooking); a customer or guest creating their own booking isn't
+  // a User record at all, so there's genuinely no staff actor to attribute
+  // it to — null is the honest answer, not a bug.
+  logActivity({
+    organizationId,
+    userId: performedByUserId || null,
+    action: "booking_created",
+    entityType: "booking",
+    entityId: booking.id,
+    metadata: { bookingDate, bookingTime },
+  });
+
   return booking;
 }
 
@@ -118,6 +134,7 @@ async function createBooking(req, res) {
     bookingTime,
     partySize,
     notes,
+    performedByUserId: req.auth?.userId ? BigInt(req.auth.userId) : null,
   });
 
   return res.status(201).json(serialize(booking));
@@ -284,6 +301,21 @@ async function updateBookingStatus(req, res) {
     data: { status: nextStatus },
   });
 
+  // Unlike cancelMyBooking above, req.auth.userId here genuinely IS a
+  // staff/admin User id — this route is tenant-scoped and staff-only, not
+  // the customer's own endpoint — so attributing it is correct, not the
+  // same trap.
+  if (nextStatus === "completed") {
+    logActivity({
+      organizationId: req.tenant.organizationId,
+      userId: req.auth?.userId ? BigInt(req.auth.userId) : null,
+      action: "appointment_completed",
+      entityType: "booking",
+      entityId: booking.id,
+      metadata: null,
+    });
+  }
+
   return res.json(serialize(updated));
 }
 
@@ -306,6 +338,21 @@ async function cancelMyBooking(req, res) {
   const updated = await prisma.booking.update({
     where: { id: booking.id },
     data: { status: "cancelled" },
+  });
+
+  // userId is deliberately null here, not req.auth.userId — on THIS
+  // endpoint that value is the CUSTOMER's own id, and AuditLog.userId has
+  // a foreign key to the `users` (staff/admin) table specifically. Logging
+  // a customer id there would violate that FK and fail silently (this is
+  // fire-and-forget) — null is the honest, correct answer: a customer
+  // cancelling their own booking isn't a User-table actor at all.
+  logActivity({
+    organizationId: booking.organizationId,
+    userId: null,
+    action: "booking_cancelled",
+    entityType: "booking",
+    entityId: booking.id,
+    metadata: null,
   });
 
   return res.json(serialize(updated));

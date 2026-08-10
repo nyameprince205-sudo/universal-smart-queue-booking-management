@@ -4,6 +4,7 @@ const prisma = require("../config/db");
 const { validatePasswordStrength } = require("../utils/passwordStrength");
 const { issueToken } = require("../services/authToken.service");
 const { notifyInBackground } = require("../services/notification.service");
+const { logActivity } = require("../services/auditLog.service");
 const { toJSONSafe } = require("../utils/serialize");
 
 function httpError(status, message) {
@@ -100,6 +101,15 @@ async function createStaff(req, res) {
     recipientId: user.id,
     channel: "email",
     message: `Welcome! Verify your email to activate your account: ${verifyLink} (this link expires in 24 hours)`,
+  });
+
+  logActivity({
+    organizationId: req.tenant.organizationId,
+    userId: req.auth?.userId ? BigInt(req.auth.userId) : null,
+    action: "staff_created",
+    entityType: "user",
+    entityId: user.id,
+    metadata: { staffName: user.name },
   });
 
   return res.status(201).json(

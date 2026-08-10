@@ -5,11 +5,6 @@ const { trackTicket } = require("../controllers/queue.controller");
 
 const router = express.Router();
 
-// A REAL health check, not just "the process is running" — it also proves
-// Prisma can actually reach MySQL. This is the single most useful endpoint
-// during setup: if this fails, you know immediately whether the problem is
-// "Express isn't running" or "Express is running but can't reach the DB,"
-// which are two completely different things to debug.
 router.get("/health", async (req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -19,16 +14,6 @@ router.get("/health", async (req, res) => {
   }
 });
 
-// Phase 16, Module 1: registered here — deliberately BEFORE the "/queue"
-// mount below — because queue.routes.js applies `authenticate,
-// requireTenant` to its ENTIRE router (see the router.use() at its top).
-// This is the one queue-related endpoint that must stay public (a guest
-// customer tracking their own ticket has no login at all), so it can't
-// live inside that file without either breaking its blanket auth or
-// requiring a bigger restructure of a file that already works. Express
-// matches routes in registration order, so putting this specific route
-// here means it's handled before the /queue mount is ever reached for a
-// request to this exact path.
 router.get("/queue/track/:uuid", asyncHandler(trackTicket));
 
 // Feature routes, mounted phase by phase:
@@ -45,5 +30,6 @@ router.use("/reports", require("./report.routes")); // <- Phase 14, mounted now
 router.use("/business-types", require("./businessType.routes")); // <- Phase 15 Step 6, mounted now
 router.use("/staff", require("./staff.routes"));
 router.use("/analytics", require("./analytics.routes")); // <- Phase 16 Module 4/5/6, mounted now
+router.use("/activity", require("./activity.routes")); // <- Phase 18 Module 4/5, mounted now
 
 module.exports = router;

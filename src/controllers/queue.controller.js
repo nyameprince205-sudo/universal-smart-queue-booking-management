@@ -2,6 +2,7 @@ const prisma = require("../config/db");
 const { randomUUID } = require("crypto");
 const { emitQueueUpdate } = require("../socket");
 const { notifyInBackground, getPreferredChannel } = require("../services/notification.service");
+const { logActivity } = require("../services/auditLog.service");
 
 // This file is the heart of the whole product. Read the comments closely —
 // this is the part worth understanding deeply, not just copying.
@@ -184,6 +185,18 @@ async function checkIn(req, res) {
 
   await broadcastBoard(req.tenant.organizationId, branchId);
 
+  // Module 4: recorded AFTER the transaction commits and the notification
+  // fires, same "never block the real action" reasoning as everything else
+  // in this fire-and-forget family.
+  logActivity({
+    organizationId: req.tenant.organizationId,
+    userId: req.auth?.userId ? BigInt(req.auth.userId) : null,
+    action: "customer_joined_queue",
+    entityType: "queue_ticket",
+    entityId: ticket.id,
+    metadata: { ticketNumber: ticket.ticketNumber },
+  });
+
   return res.status(201).json(serialize(ticket));
 }
 
@@ -329,6 +342,15 @@ async function completeTicket(req, res) {
 
   await broadcastBoard(req.tenant.organizationId, ticket.branchId);
 
+  logActivity({
+    organizationId: req.tenant.organizationId,
+    userId: req.auth?.userId ? BigInt(req.auth.userId) : null,
+    action: "service_completed",
+    entityType: "queue_ticket",
+    entityId: ticket.id,
+    metadata: { ticketNumber: ticket.ticketNumber },
+  });
+
   return res.json(serialize(updated));
 }
 
@@ -374,6 +396,15 @@ async function markMissed(req, res) {
   });
 
   await broadcastBoard(req.tenant.organizationId, ticket.branchId);
+
+  logActivity({
+    organizationId: req.tenant.organizationId,
+    userId: req.auth?.userId ? BigInt(req.auth.userId) : null,
+    action: "customer_missed",
+    entityType: "queue_ticket",
+    entityId: ticket.id,
+    metadata: { ticketNumber: ticket.ticketNumber },
+  });
 
   return res.json(serialize(updated));
 }

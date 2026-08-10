@@ -152,4 +152,78 @@ async function listStaff(req, res) {
   );
 }
 
-module.exports = { createStaff, listStaff };
+// ---- ORG_ADMIN: deactivate or reactivate a staff member ----
+// Shared by both actions below — this single where-clause is the ENTIRE
+// permission model for this feature, not one of several checks. A target
+// user only ever matches if they (a) belong to THIS org (tenant
+// isolation — never trust an id alone) and (b) hold the STAFF role
+// specifically — never another ORG_ADMIN, and never a SUPER_ADMIN (whose
+// organizationId is null and could never match anyway). That combination
+// makes self-deactivation, cross-org access, and admin-on-admin actions
+// all structurally impossible, not just policy — there's no separate
+// "and also check they're not a Super Admin" branch to forget to add.
+//
+// A non-matching id returns 404, not 403 — "you can't do that to this
+// user" would confirm the id belongs to SOMEONE, just not someone this
+// admin can touch. 404 doesn't leak that distinction.
+async function findManageableStaff(req) {
+  return prisma.user.findFirst({
+    where: {
+      id: BigInt(req.params.id),
+      organizationId: req.tenant.organizationId,
+      role: { name: "STAFF" },
+    },
+  });
+}
+
+// Sets status to "inactive" — NOT a delete. login()'s existing
+// `user.status !== "active"` check (already there before this feature
+// existed) is what actually locks them out; this function just flips the
+// one field that check reads. Every historical record this person is
+// attached to — queue tickets they handled, audit log entries, activity
+// feed lines — stays exactly as it was; nothing here touches those.
+async function deactivateStaff(req, res) {
+  const staff = await findManageableStaff(req);
+  if (!staff) return res.status(404).json({ error: "Staff member not found" });
+
+  if (staff.status === "inactive") {
+    return res.status(400).json({ error: "This staff member is already deactivated" });
+  }
+
+  const updated = await prisma.user.update({ where: { id: staff.id }, data: { status: "inactive" } });
+
+  logActivity({
+    organizationId: req.tenant.organizationId,
+    userId: req.auth?.userId ? BigInt(req.auth.userId) : null,
+    action: "staff_deactivated",
+    entityType: "user",
+    entityId: staff.id,
+    metadata: { staffName: staff.name },
+  });
+
+  return res.json(toJSONSafe({ id: updated.id, name: updated.name, status: updated.status }));
+}
+
+async function reactivateStaff(req, res) {
+  const staff = await findManageableStaff(req);
+  if (!staff) return res.status(404).json({ error: "Staff member not found" });
+
+  if (staff.status === "active") {
+    return res.status(400).json({ error: "This staff member is already active" });
+  }
+
+  const updated = await prisma.user.update({ where: { id: staff.id }, data: { status: "active" } });
+
+  logActivity({
+    organizationId: req.tenant.organizationId,
+    userId: req.auth?.userId ? BigInt(req.auth.userId) : null,
+    action: "staff_reactivated",
+    entityType: "user",
+    entityId: staff.id,
+    metadata: { staffName: staff.name },
+  });
+
+  return res.json(toJSONSafe({ id: updated.id, name: updated.name, status: updated.status }));
+}
+
+module.exports = { createStaff, listStaff, deactivateStaff, reactivateStaff };

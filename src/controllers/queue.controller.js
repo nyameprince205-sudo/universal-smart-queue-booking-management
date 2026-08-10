@@ -219,6 +219,15 @@ async function callNext(req, res) {
         status: "called",
         calledAt: new Date(),
         counterId: BigInt(counterId),
+        // Phase 16, Module 4: records WHO called this ticket, so staff
+        // performance analytics have real data to work with instead of
+        // nothing. Set once here and left as-is through the rest of the
+        // ticket's lifecycle — even if a different staff member ends up
+        // marking it served/complete (a real possibility at a busy
+        // counter), the person who actually called the customer over is
+        // the more meaningful attribution for "how is this staff member
+        // performing," not whoever happened to click the last button.
+        handledByUserId: BigInt(req.auth.userId),
       },
     });
 

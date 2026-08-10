@@ -171,6 +171,7 @@ model User {
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   branch       Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
   role         Role          @relation(fields: [roleId], references: [id])
+  handledQueueTickets QueueTicket[]
   auditLogs    AuditLog[]
 
   @@index([organizationId])
@@ -336,6 +337,7 @@ model QueueTicket {
   customerId     BigInt      @map("customer_id")
   serviceId      BigInt      @map("service_id")
   counterId      BigInt?     @map("counter_id")
+  handledByUserId BigInt?  @map("handled_by_user_id")
   queueDate      DateTime    @map("queue_date") @db.Date
   ticketNumber   String      @map("ticket_number") @db.VarChar(20)
   priority       Int         @default(0) @db.UnsignedTinyInt
@@ -350,6 +352,7 @@ model QueueTicket {
   customer     Customer        @relation(fields: [customerId], references: [id])
   service      Service         @relation(fields: [serviceId], references: [id])
   counter      ServiceCounter? @relation(fields: [counterId], references: [id], onDelete: SetNull)
+  handledByUser User? @relation(fields: [handledByUserId], references: [id], onDelete: SetNull)
   history      QueueHistory?
 
   @@unique([organizationId, branchId, queueDate, ticketNumber], name: "uq_ticket_per_branch_day")

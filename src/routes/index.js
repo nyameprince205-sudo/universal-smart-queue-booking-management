@@ -44,5 +44,6 @@ router.use("/subscriptions", require("./subscription.routes")); // <- Phase 13, 
 router.use("/reports", require("./report.routes")); // <- Phase 14, mounted now
 router.use("/business-types", require("./businessType.routes")); // <- Phase 15 Step 6, mounted now
 router.use("/staff", require("./staff.routes"));
+router.use("/analytics", require("./analytics.routes")); // <- Phase 16 Module 4/5/6, mounted now
 
 module.exports = router;

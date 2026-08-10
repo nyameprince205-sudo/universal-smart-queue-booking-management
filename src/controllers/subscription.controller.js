@@ -145,10 +145,37 @@ async function paystackWebhook(req, res) {
   return res.status(200).json({ received: true });
 }
 
+// ---- Phase 18, Module 6: payment history ----
+// Reuses the Payment table exactly as it already exists (Phase 13) — every
+// row created by initializeSubscription above is already here, whether it
+// ended up successful, failed, or still pending. Nothing new is written;
+// this just exposes what was already being recorded, which nothing had
+// read back out until now.
+async function listPaymentHistory(req, res) {
+  const payments = await prisma.payment.findMany({
+    where: { organizationId: req.tenant.organizationId },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+
+  return res.json(
+    payments.map((p) => ({
+      id: p.id.toString(),
+      amount: p.amount.toString(),
+      currency: p.currency,
+      status: p.status,
+      gatewayReference: p.gatewayReference,
+      paidAt: p.paidAt,
+      createdAt: p.createdAt,
+    }))
+  );
+}
+
 module.exports = {
   listPlans,
   getMySubscription,
   initializeSubscription,
   verifySubscriptionPayment,
   paystackWebhook,
+  listPaymentHistory,
 };

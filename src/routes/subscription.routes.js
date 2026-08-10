@@ -9,6 +9,7 @@ const {
   initializeSubscription,
   verifySubscriptionPayment,
   paystackWebhook,
+  listPaymentHistory,
 } = require("../controllers/subscription.controller");
 
 const router = express.Router();
@@ -36,6 +37,13 @@ router.get(
   requireTenant,
   requireRole("ORG_ADMIN"),
   asyncHandler(verifySubscriptionPayment)
+);
+router.get(
+  "/payments",
+  authenticate,
+  requireTenant,
+  requireRole("ORG_ADMIN"),
+  asyncHandler(listPaymentHistory)
 );
 
 module.exports = router;

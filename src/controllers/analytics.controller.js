@@ -402,27 +402,63 @@ async function getExecutiveSummary(req, res) {
   const organizationId = req.tenant.organizationId;
   const { start, end } = todayRangeUTC();
 
-  const [branches, allActiveTickets, todaysTickets, todaysCompletedBookings] = await Promise.all([
+  // Phase 18, Module 11: week/month boundaries for growth-rate comparisons.
+  // Sunday-start week, matching JS's own getUTCDay() convention (0 = Sunday)
+  // rather than inventing a different week-start rule elsewhere in the app.
+  const now = new Date();
+  const thisWeekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - now.getUTCDay()));
+  const lastWeekStart = new Date(thisWeekStart.getTime() - 7 * 86400000);
+  const lastWeekEnd = new Date(thisWeekStart.getTime() - 1);
+  const thisMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const lastMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  const lastMonthEnd = new Date(thisMonthStart.getTime() - 1);
+
+  const [
+    branches,
+    allActiveTickets,
+    todaysTickets,
+    todaysAllBookings,
+    todaysCompletedBookings,
+    thisWeekBookingCount,
+    lastWeekBookingCount,
+    thisMonthBookingCount,
+    lastMonthBookingCount,
+  ] = await Promise.all([
     prisma.branch.findMany({ where: { organizationId }, select: { id: true, name: true } }),
     // "Right now" — every ticket currently in the live queue, org-wide.
     prisma.queueTicket.findMany({
       where: { organizationId, status: { in: ["waiting", "called", "serving"] } },
       select: { branchId: true, status: true, handledByUserId: true },
     }),
-    // Today's full activity, for the averages/counts below.
+    // Today's full activity — now also pulling the handler's NAME (Module
+    // 11's "Best Staff" needs it) alongside everything the branch cards
+    // already used this for.
     prisma.queueTicket.findMany({
       where: { organizationId, queueDate: { gte: start, lte: end } },
       select: {
         branchId: true,
         status: true,
         handledByUserId: true,
+        handledByUser: { select: { name: true } },
         history: { select: { waitTimeSeconds: true, serviceTimeSeconds: true } },
       },
+    }),
+    // Module 10's "Bookings today" card field is EVERY booking today
+    // (pending/confirmed/etc, not just completed) — a separate query from
+    // todaysCompletedBookings below, which stays completed-only since
+    // that's what revenue/service-ranking actually need.
+    prisma.booking.findMany({
+      where: { organizationId, bookingDate: { gte: start, lte: end }, deletedAt: null },
+      select: { branchId: true },
     }),
     prisma.booking.findMany({
       where: { organizationId, bookingDate: { gte: start, lte: end }, status: "completed", deletedAt: null },
       select: { branchId: true, serviceId: true, service: { select: { name: true, price: true } } },
     }),
+    prisma.booking.count({ where: { organizationId, bookingDate: { gte: thisWeekStart, lte: end }, deletedAt: null } }),
+    prisma.booking.count({ where: { organizationId, bookingDate: { gte: lastWeekStart, lte: lastWeekEnd }, deletedAt: null } }),
+    prisma.booking.count({ where: { organizationId, bookingDate: { gte: thisMonthStart, lte: end }, deletedAt: null } }),
+    prisma.booking.count({ where: { organizationId, bookingDate: { gte: lastMonthStart, lte: lastMonthEnd }, deletedAt: null } }),
   ]);
 
   const activeCounters = await prisma.serviceCounter.count({ where: { organizationId, status: "open" } });
@@ -439,6 +475,10 @@ async function getExecutiveSummary(req, res) {
   // Branch ranking — reuses the SAME per-branch shape as Module 5's branch
   // comparison, but scoped to today only and sorted by tickets served, so
   // "ranking" actually means something (most active branch first).
+  //
+  // Module 10 additions: bookingsToday, staffAvailable, queueEfficiency —
+  // everything the spec's branch CARD needs that the table-based branch
+  // comparison (Module 5) never needed.
   const branchRanking = branches
     .map((branch) => {
       const branchActiveTickets = allActiveTickets.filter((t) => t.branchId === branch.id);
@@ -448,12 +488,18 @@ async function getExecutiveSummary(req, res) {
       const averageWaitTimeSeconds = branchWaitTimes.length
         ? Math.round(branchWaitTimes.reduce((a, v) => a + v, 0) / branchWaitTimes.length)
         : null;
+      const branchCompleted = branchTodayTickets.filter((t) => t.status === "completed").length;
+      const branchMissed = branchTodayTickets.filter((t) => t.status === "missed").length;
+      const branchStaffIds = new Set(branchTodayTickets.map((t) => t.handledByUserId).filter(Boolean).map((id) => id.toString()));
 
       return {
         branchId: branch.id,
         branchName: branch.name,
         customersWaiting: waiting,
-        ticketsServedToday: branchTodayTickets.filter((t) => t.status === "completed").length,
+        ticketsServedToday: branchCompleted,
+        bookingsToday: todaysAllBookings.filter((b) => b.branchId === branch.id).length,
+        staffAvailable: branchStaffIds.size,
+        queueEfficiencyPercent: branchCompleted + branchMissed > 0 ? round1((branchCompleted / (branchCompleted + branchMissed)) * 100) : null,
         averageWaitTimeSeconds,
         // See the constants above for what these thresholds mean and why.
         overloaded: waiting > OVERLOAD_WAITING_THRESHOLD || (averageWaitTimeSeconds || 0) > OVERLOAD_WAIT_SECONDS_THRESHOLD,
@@ -473,6 +519,33 @@ async function getExecutiveSummary(req, res) {
   const serviceRanking = Array.from(serviceCounts.values()).sort((a, b) => b.count - a.count);
 
   const overloadedBranches = branchRanking.filter((b) => b.overloaded);
+
+  // Module 11: Best Staff — grouped from the SAME todaysTickets data the
+  // branch cards already computed from, just re-sliced by staff instead of
+  // by branch. A staff member with zero completed tickets today never
+  // appears here — "best" implies having actually completed something.
+  const staffCompletedCounts = new Map();
+  for (const t of todaysTickets) {
+    if (t.status !== "completed" || !t.handledByUserId) continue;
+    const key = t.handledByUserId.toString();
+    if (!staffCompletedCounts.has(key)) {
+      staffCompletedCounts.set(key, { userId: t.handledByUserId, name: t.handledByUser?.name || "Unknown", completed: 0 });
+    }
+    staffCompletedCounts.get(key).completed += 1;
+  }
+  const bestStaff = Array.from(staffCompletedCounts.values()).sort((a, b) => b.completed - a.completed)[0] || null;
+
+  // Best/worst branch by wait time — only ever considers branches that
+  // actually HAVE a wait-time average today; a branch with zero traffic
+  // shouldn't win "lowest wait time" by default just because null sorts
+  // oddly, so those are filtered out entirely first.
+  const branchesWithWaitData = branchRanking.filter((b) => b.averageWaitTimeSeconds != null);
+  const highestWaitBranch = branchesWithWaitData.length
+    ? [...branchesWithWaitData].sort((a, b) => b.averageWaitTimeSeconds - a.averageWaitTimeSeconds)[0]
+    : null;
+  const lowestWaitBranch = branchesWithWaitData.length
+    ? [...branchesWithWaitData].sort((a, b) => a.averageWaitTimeSeconds - b.averageWaitTimeSeconds)[0]
+    : null;
 
   return res.json(
     toJSONSafe({
@@ -499,8 +572,26 @@ async function getExecutiveSummary(req, res) {
             ? `${b.customersWaiting} customers currently waiting`
             : `Average wait today is ${Math.round((b.averageWaitTimeSeconds || 0) / 60)} minutes`,
       })),
+      // Phase 18, Module 11: everything below is new.
+      summary: {
+        weeklyGrowthPercent: computeGrowth(thisWeekBookingCount, lastWeekBookingCount),
+        monthlyGrowthPercent: computeGrowth(thisMonthBookingCount, lastMonthBookingCount),
+        bestBranch: branchRanking[0] ? { branchId: branchRanking[0].branchId, branchName: branchRanking[0].branchName, ticketsServedToday: branchRanking[0].ticketsServedToday } : null,
+        bestStaff,
+        mostRequestedService: serviceRanking[0] || null,
+        highestWaitBranch: highestWaitBranch ? { branchId: highestWaitBranch.branchId, branchName: highestWaitBranch.branchName, averageWaitTimeSeconds: highestWaitBranch.averageWaitTimeSeconds } : null,
+        lowestWaitBranch: lowestWaitBranch ? { branchId: lowestWaitBranch.branchId, branchName: lowestWaitBranch.branchName, averageWaitTimeSeconds: lowestWaitBranch.averageWaitTimeSeconds } : null,
+      },
     })
   );
+}
+
+// Same null-when-baseline-is-zero reasoning as computeTrend() used
+// elsewhere in this file — a "growth rate" from a zero baseline isn't a
+// real percentage worth displaying.
+function computeGrowth(current, previous) {
+  if (!previous) return null;
+  return round1(((current - previous) / previous) * 100);
 }
 
 // ------------------------------------------------------------

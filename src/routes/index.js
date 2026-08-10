@@ -31,5 +31,5 @@ router.use("/business-types", require("./businessType.routes")); // <- Phase 15 
 router.use("/staff", require("./staff.routes"));
 router.use("/analytics", require("./analytics.routes")); // <- Phase 16 Module 4/5/6, mounted now
 router.use("/activity", require("./activity.routes")); // <- Phase 18 Module 4/5, mounted now
-
+router.use("/organization-requests", require("./organizationRequest.routes"));
 module.exports = router;

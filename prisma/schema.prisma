@@ -173,7 +173,8 @@ model User {
   role         Role          @relation(fields: [roleId], references: [id])
   handledQueueTickets QueueTicket[]
   auditLogs    AuditLog[]
-
+  reviewedOrgRequests OrganizationRequest[]
+  
   @@index([organizationId])
   @@index([branchId])
   @@map("users")
@@ -601,4 +602,35 @@ enum AuthTokenType {
 enum AuthOwnerType {
   user
   customer
+}
+
+
+model OrganizationRequest {
+  id                BigInt    @id @default(autoincrement())
+  businessName      String    @map("business_name") @db.VarChar(150)
+  ownerName         String    @map("owner_name") @db.VarChar(150)
+  businessType      String    @map("business_type") @db.VarChar(100)
+  phone             String    @db.VarChar(30)
+  email             String    @db.VarChar(150)
+  address           String?   @db.VarChar(255)
+  city              String?   @db.VarChar(100)
+  region            String?   @db.VarChar(100)
+  numberOfBranches  Int?      @map("number_of_branches")
+  additionalNotes   String?   @map("additional_notes") @db.VarChar(1000)
+  status            OrgRequestStatus @default(pending)
+  reviewNotes       String?   @map("review_notes") @db.VarChar(500)
+  reviewedAt        DateTime? @map("reviewed_at")
+  reviewedBy        BigInt?   @map("reviewed_by")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  reviewer User? @relation(fields: [reviewedBy], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@map("organization_requests")
+}
+
+enum OrgRequestStatus {
+  pending
+  approved
+  rejected
 }

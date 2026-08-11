@@ -39,6 +39,14 @@ model Organization {
   status           OrgStatus   @default(trial)
   createdAt        DateTime    @default(now()) @map("created_at")
   updatedAt        DateTime    @updatedAt @map("updated_at")
+  
+  description   String?  @db.VarChar(500)
+  whatsapp      String?  @db.VarChar(30)
+  website       String?  @db.VarChar(255)
+  facebook      String?  @db.VarChar(255)
+  instagram     String?  @db.VarChar(255)
+  openingHours  String?  @map("opening_hours") @db.VarChar(500)
+
 
   businessType         BusinessType          @relation(fields: [businessTypeId], references: [id])
   settings             OrganizationSettings?
@@ -633,4 +641,19 @@ enum OrgRequestStatus {
   pending
   approved
   rejected
+}
+
+
+model ContactSubmission {
+  id        BigInt   @id @default(autoincrement())
+  name      String   @db.VarChar(150)
+  email     String   @db.VarChar(150)
+  phone     String?  @db.VarChar(30)
+  subject   String?  @db.VarChar(200)
+  message   String   @db.VarChar(2000)
+  isRead    Boolean  @default(false) @map("is_read")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([isRead])
+  @@map("contact_submissions")
 }

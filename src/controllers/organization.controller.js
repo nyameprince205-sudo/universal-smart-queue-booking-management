@@ -52,6 +52,17 @@ async function getPublicOrganization(req, res) {
       name: organization.name,
       slug: organization.slug,
       logoUrl: organization.logoUrl,
+      phone: organization.phone,
+      // Phase 17, Step 3: everything below is new — added to whatever
+      // "public storefront" set of fields getPublicOrganization already
+      // decided was safe to expose (see the big comment above this
+      // function). Still nothing sensitive: no email, no internal settings.
+      description: organization.description,
+      whatsapp: organization.whatsapp,
+      website: organization.website,
+      facebook: organization.facebook,
+      instagram: organization.instagram,
+      openingHours: organization.openingHours,
       branches: organization.branches,
       services: organization.services,
     })
@@ -189,7 +200,7 @@ async function getMyOrganization(req, res) {
 }
 
 async function updateMyOrganization(req, res) {
-  const { name, phone, logoUrl, queuePrefix, timezone } = req.body;
+  const { name, phone, logoUrl, queuePrefix, timezone, description, whatsapp, website, facebook, instagram, openingHours } = req.body;
 
   const organization = await prisma.organization.update({
     where: { id: req.tenant.organizationId },
@@ -197,6 +208,15 @@ async function updateMyOrganization(req, res) {
       name: name || undefined,
       phone: phone || undefined,
       logoUrl: logoUrl || undefined,
+      // Phase 17, Step 3 — same "empty string means don't touch it" pattern
+      // as the fields above, kept consistent rather than introducing a
+      // different clearing behavior for only the new fields.
+      description: description || undefined,
+      whatsapp: whatsapp || undefined,
+      website: website || undefined,
+      facebook: facebook || undefined,
+      instagram: instagram || undefined,
+      openingHours: openingHours || undefined,
     },
   });
 

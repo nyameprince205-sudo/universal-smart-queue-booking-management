@@ -125,6 +125,42 @@ async function getMyOrganizationHistory(req, res) {
   );
 }
 
+// ---- Org Admin: view every customer who has interacted with THEIR org ----
+// Directly answers a real, previously-unaddressed question: which
+// customers has this business actually served — whether they made a full
+// self-service account (register() above) or were quick-registered by
+// staff during check-in (quickRegister() below) or a guest booking
+// (booking.controller.js's createGuestBooking). All three paths already
+// write to the SAME customer_organizations table (see quickRegister's
+// upsert, and createBookingCore's identical upsert on every booking) —
+// this reads back what was already being recorded, nothing new written.
+async function listMyCustomers(req, res) {
+  const relationships = await prisma.customerOrganization.findMany({
+    where: { organizationId: req.tenant.organizationId },
+    include: {
+      customer: { select: { id: true, name: true, phone: true, email: true, passwordHash: true } },
+    },
+    orderBy: { lastInteractionAt: "desc" },
+  });
+
+  return res.json(
+    relationships.map((r) => ({
+      customerId: r.customer.id.toString(),
+      name: r.customer.name,
+      phone: r.customer.phone,
+      email: r.customer.email,
+      // Never expose the hash itself — just whether one exists, which is
+      // the actual useful signal: did this person create their own
+      // account, or were they only ever quick-registered/booked as a guest.
+      hasAccount: !!r.customer.passwordHash,
+      totalBookings: r.totalBookings,
+      firstInteractionAt: r.firstInteractionAt,
+      lastInteractionAt: r.lastInteractionAt,
+      relationshipStatus: r.status,
+    }))
+  );
+}
+
 // ---- Staff-side (tenant-scoped): look up or quick-register a customer ----
 // Used during check-in (Phase 11) when staff need a customerId to attach to
 // a booking/queue ticket, and the person may or may not already exist on
@@ -234,6 +270,7 @@ module.exports = {
   refresh,
   getMe,
   getMyOrganizationHistory,
+  listMyCustomers,
   lookupByPhone,
   quickRegister,
   forgotPassword,

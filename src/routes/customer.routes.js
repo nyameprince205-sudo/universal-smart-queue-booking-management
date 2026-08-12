@@ -9,6 +9,7 @@ const {
   refresh,
   getMe,
   getMyOrganizationHistory,
+  listMyCustomers,
   lookupByPhone,
   quickRegister,
   forgotPassword,
@@ -37,6 +38,18 @@ router.get(
   authenticate,
   requireRole("CUSTOMER"),
   asyncHandler(getMyOrganizationHistory)
+);
+
+// --- Org Admin: view every customer their OWN organization has served ---
+// Tenant-scoped like every other admin-facing list in this app — an Org
+// Admin only ever sees customer_organizations rows for their own
+// organizationId, never another business's customers.
+router.get(
+  "/",
+  authenticate,
+  requireTenant,
+  requireRole("ORG_ADMIN"),
+  asyncHandler(listMyCustomers)
 );
 
 // --- Staff-side: tenant-scoped, used during check-in ---

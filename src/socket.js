@@ -15,11 +15,27 @@ function initSocket(httpServer) {
 
   io.on("connection", (socket) => {
     socket.on("join-branch-queue", (branchId) => {
-      socket.join(roomName(branchId));
+      socket.join(branchRoomName(branchId));
     });
 
     socket.on("leave-branch-queue", (branchId) => {
-      socket.leave(roomName(branchId));
+      socket.leave(branchRoomName(branchId));
+    });
+
+    // A customer's OWN room — separate concept from a branch room above.
+    // A customer's bookings can span multiple organizations and branches
+    // (see customer.controller.js's getMyOrganizationHistory comment on
+    // why customers are platform-wide, not org-scoped), so their live
+    // updates can't be tied to any one branch room. Keyed by their own
+    // customer id instead, so a booking status change anywhere reaches
+    // them regardless of which business it came from — and reaches ONLY
+    // them, never another customer watching their own bookings.
+    socket.on("join-customer-updates", (customerId) => {
+      socket.join(customerRoomName(customerId));
+    });
+
+    socket.on("leave-customer-updates", (customerId) => {
+      socket.leave(customerRoomName(customerId));
     });
   });
 
@@ -36,15 +52,30 @@ function initSocket(httpServer) {
 // or event frequency ever makes that wasteful.
 function emitQueueUpdate(branchId, board) {
   if (!io) return; // not initialized (e.g. under test) — no-op instead of crashing
-  io.to(roomName(branchId)).emit("queue:update", board);
+  io.to(branchRoomName(branchId)).emit("queue:update", board);
 }
 
-function roomName(branchId) {
+// Called after a booking's status actually changes (checkIn linking a
+// booking, completeTicket finishing one) — see queue.controller.js. Same
+// "client just refetches wholesale" simplicity as emitQueueUpdate above;
+// this event just says "something about your bookings changed," the
+// client re-fetches its own list rather than trying to patch one record
+// in place from a payload here.
+function emitBookingUpdate(customerId) {
+  if (!io) return;
+  io.to(customerRoomName(customerId)).emit("booking:update");
+}
+
+function branchRoomName(branchId) {
   return `branch:${branchId}`;
+}
+
+function customerRoomName(customerId) {
+  return `customer:${customerId}`;
 }
 
 function getIO() {
   return io;
 }
 
-module.exports = { initSocket, emitQueueUpdate, getIO };
+module.exports = { initSocket, emitQueueUpdate, emitBookingUpdate, getIO };

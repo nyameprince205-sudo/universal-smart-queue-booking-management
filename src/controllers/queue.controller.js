@@ -1,8 +1,9 @@
 const prisma = require("../config/db");
 const { randomUUID } = require("crypto");
-const { emitQueueUpdate } = require("../socket");
+const { emitQueueUpdate, emitBookingUpdate } = require("../socket");
 const { notifyInBackground, getPreferredChannel } = require("../services/notification.service");
 const { logActivity } = require("../services/auditLog.service");
+const { toJSONSafe } = require("../utils/serialize");
 
 // This file is the heart of the whole product. Read the comments closely —
 // this is the part worth understanding deeply, not just copying.
@@ -183,6 +184,13 @@ async function checkIn(req, res) {
     message: `Your queue number is ${ticket.ticketNumber}. Track your position live: ${trackingLink}`,
   });
 
+  // Real-time push, so a customer looking at My Bookings or their
+  // homepage sees the status change to "checked in" the moment it
+  // happens — instead of only finding out on their next manual refresh.
+  if (bookingId) {
+    emitBookingUpdate(customerId);
+  }
+
   await broadcastBoard(req.tenant.organizationId, branchId);
 
   // Module 4: recorded AFTER the transaction commits and the notification
@@ -337,10 +345,46 @@ async function completeTicket(req, res) {
         serviceTimeSeconds,
       },
     });
+
+    // Real gap, found after the fact: this ticket carries a bookingId
+    // whenever it was created from an existing booking (see checkIn()
+    // above), but completing the TICKET never updated the BOOKING it
+    // came from — so a booking checked in this morning would sit at
+    // "checked_in" forever, even after the actual service was finished
+    // hours later. Same transaction as the ticket's own completion, so
+    // the two records can never disagree about whether the visit is done.
+    if (ticket.bookingId) {
+      await tx.booking.update({
+        where: { id: ticket.bookingId },
+        data: { status: "completed" },
+      });
+    }
+
     return t;
   });
 
   await broadcastBoard(req.tenant.organizationId, ticket.branchId);
+
+  // Fired after the transaction commits, same "never block or roll back
+  // the real action" reasoning as every other notification in this file.
+  // Only sent when this ticket actually came from a booking — a walk-in
+  // with no booking has nothing to "complete" from their own perspective
+  // beyond the queue experience itself, which the check-in notification
+  // already covered.
+  if (ticket.bookingId) {
+    const completionChannel = await getPreferredChannel(req.tenant.organizationId);
+    notifyInBackground({
+      organizationId: req.tenant.organizationId,
+      recipientType: "customer",
+      recipientId: ticket.customerId,
+      channel: completionChannel,
+      message: "Thank you for choosing us — your visit is complete. We hope to see you again soon!",
+    });
+    // Same real-time push as check-in above — this is the moment the
+    // booking someone's watching on their homepage or My Bookings page
+    // flips from "checked in" to "completed" live.
+    emitBookingUpdate(ticket.customerId);
+  }
 
   logActivity({
     organizationId: req.tenant.organizationId,
@@ -567,17 +611,19 @@ async function trackTicket(req, res) {
   });
 }
 
+// This used to list every BigInt field by hand (id, organizationId,
+// branchId, ...) and convert each one individually — the exact same
+// pattern organization.controller.js's serializeOrg comment already
+// warned about: a manual list is guaranteed to eventually miss a field.
+// It did: handledByUserId (added later, for staff attribution) was never
+// added to this list, and "Do not know how to serialize a BigInt" only
+// ever shows up at the real res.json() call — no amount of mock-based
+// testing catches it, since a mock .json() just stores the object without
+// actually running it through JSON.stringify the way Express does. Using
+// the same generic recursive converter every other controller already
+// uses means this can't happen again for any FUTURE field either.
 function serialize(ticket) {
-  return {
-    ...ticket,
-    id: ticket.id.toString(),
-    organizationId: ticket.organizationId.toString(),
-    branchId: ticket.branchId.toString(),
-    bookingId: ticket.bookingId ? ticket.bookingId.toString() : null,
-    customerId: ticket.customerId ? ticket.customerId.toString() : undefined,
-    serviceId: ticket.serviceId ? ticket.serviceId.toString() : undefined,
-    counterId: ticket.counterId ? ticket.counterId.toString() : null,
-  };
+  return toJSONSafe(ticket);
 }
 
 module.exports = {

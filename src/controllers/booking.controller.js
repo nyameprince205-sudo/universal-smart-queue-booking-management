@@ -2,6 +2,7 @@ const prisma = require("../config/db");
 const { randomUUID } = require("crypto");
 const { notifyInBackground, getPreferredChannel } = require("../services/notification.service");
 const { logActivity } = require("../services/auditLog.service");
+const { toJSONSafe } = require("../utils/serialize");
 
 // A booking's status is a proper state machine, not a free-for-all field.
 // This table is the single source of truth for "what can become what" —
@@ -239,7 +240,18 @@ async function listBookings(req, res) {
   const { date } = req.query;
 
   const where = { organizationId: req.tenant.organizationId };
-  if (req.tenant.branchId) where.branchId = req.tenant.branchId;
+  // A STAFF account's own branchId (from their JWT) always wins — never
+  // trust a client-supplied branchId to override that, or a staff member
+  // could view another branch's bookings just by changing a query param.
+  // An ORG_ADMIN's token carries no branchId at all (they're not scoped to
+  // one), so THEIR queries need an explicit ?branchId= to match whichever
+  // branch they're currently viewing — without this, listBookings silently
+  // mixed every branch's bookings together for any ORG_ADMIN caller.
+  if (req.tenant.branchId) {
+    where.branchId = req.tenant.branchId;
+  } else if (req.query.branchId) {
+    where.branchId = BigInt(req.query.branchId);
+  }
   if (date) where.bookingDate = new Date(date);
 
   const bookings = await prisma.booking.findMany({
@@ -358,15 +370,15 @@ async function cancelMyBooking(req, res) {
   return res.json(serialize(updated));
 }
 
+// Not currently broken — every BigInt field on Booking happens to be
+// covered by the list below today — but this is the exact same fragile
+// pattern that just caused a real "Do not know how to serialize a BigInt"
+// crash in queue.controller.js's serialize(): a manually maintained list
+// that silently stops being complete the moment a new BigInt field gets
+// added later and nobody remembers to add it here too. Hardened now,
+// before that happens, rather than after.
 function serialize(booking) {
-  return {
-    ...booking,
-    id: booking.id.toString(),
-    organizationId: booking.organizationId.toString(),
-    branchId: booking.branchId.toString(),
-    customerId: booking.customerId ? booking.customerId.toString() : undefined,
-    serviceId: booking.serviceId ? booking.serviceId.toString() : undefined,
-  };
+  return toJSONSafe(booking);
 }
 
 module.exports = {

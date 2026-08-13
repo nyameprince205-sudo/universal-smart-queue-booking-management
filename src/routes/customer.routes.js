@@ -40,15 +40,18 @@ router.get(
   asyncHandler(getMyOrganizationHistory)
 );
 
-// --- Org Admin: view every customer their OWN organization has served ---
-// Tenant-scoped like every other admin-facing list in this app — an Org
-// Admin only ever sees customer_organizations rows for their own
-// organizationId, never another business's customers.
+// --- View every customer THIS organization has served ---
+// Tenant-scoped like every other admin-facing list in this app — only
+// ever the caller's own organizationId, never another business's
+// customers. STAFF included alongside ORG_ADMIN — a front-desk worker
+// needs to be able to look up a customer's name and number themselves
+// when someone calls in with a question, without having to escalate to
+// a manager just to check who someone is.
 router.get(
   "/",
   authenticate,
   requireTenant,
-  requireRole("ORG_ADMIN"),
+  requireRole("STAFF", "ORG_ADMIN"),
   asyncHandler(listMyCustomers)
 );
 

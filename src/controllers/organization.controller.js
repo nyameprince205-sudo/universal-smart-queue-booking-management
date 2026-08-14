@@ -1,6 +1,15 @@
 const prisma = require("../config/db");
-const { randomUUID } = require("crypto");
+const { randomUUID, randomBytes } = require("crypto");
+const bcrypt = require("bcryptjs");
 const { toJSONSafe } = require("../utils/serialize");
+const { issueToken } = require("../services/authToken.service");
+const { notifyInBackground } = require("../services/notification.service");
+
+function httpError(status, message) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
 
 // IMPORTANT ARCHITECTURAL NOTE, worth reading before anything else:
 // `organizations` is the ONE table in this entire schema that does NOT have
@@ -102,22 +111,41 @@ async function searchPublicOrganizations(req, res) {
 
 // ---- Platform-level (Super Admin) ----
 
-async function createOrganization(req, res) {
-  const { name, email, businessTypeId, phone, logoUrl } = req.body;
-
-  if (!name || !email || !businessTypeId) {
-    return res.status(400).json({ error: "name, email, and businessTypeId are required" });
-  }
-
+// Extracted so this exact logic can be reused from a SECOND place —
+// organizationRequest.controller.js's approval flow — without duplicating
+// it. Two separate implementations of "create an organization" would
+// eventually drift apart (one gets a bugfix, the other doesn't); one
+// function called from two entry points can't.
+//
+// Real gap, found after the fact: this used to only ever create the
+// Organization + its settings row — never a login for anyone to actually
+// manage it. Every organization created this way, through EITHER entry
+// point, came out the other end completely unusable — nobody could sign
+// in as its Org Admin to add branches, staff, or anything else. Now it
+// also provisions that first login, same idea as createStaff() creating
+// a new staff account — except there's no existing Org Admin here to
+// type a password on this person's behalf (that's the whole problem this
+// function exists to solve), so instead of a caller-supplied password,
+// this generates a random, unguessable placeholder that nobody is ever
+// told, and immediately issues a real password-reset token so the new
+// Org Admin sets their OWN first password through the same secure,
+// already-tested flow "Forgot Password" uses.
+async function createOrganizationCore({ name, email, businessTypeId, phone, logoUrl, ownerName }) {
   const slug = slugify(name);
 
-  // Creating the organization AND its settings row together, in one
-  // transaction, means you can never end up with an organization that's
-  // missing its settings row (which organization_settings.organization_id
-  // being UNIQUE and NOT NULL already assumes exists everywhere else in
-  // the codebase — better to guarantee it here than defend against its
-  // absence in every controller that reads settings later).
-  const organization = await prisma.$transaction(async (tx) => {
+  const orgAdminRole = await prisma.role.findUnique({ where: { name: "ORG_ADMIN" } });
+  if (!orgAdminRole) {
+    // A missing ORG_ADMIN role means the platform's own seed data is
+    // broken — a deployment/data-integrity problem, not something the
+    // caller (Super Admin, or an approved request) did wrong.
+    throw httpError(500, "ORG_ADMIN role is not configured on this platform");
+  }
+
+  // Creating the organization, its settings row, AND its first admin user
+  // together, in one transaction — an organization that exists but has
+  // no admin login would be just as broken as one missing its settings
+  // row, so this guarantees you never end up with either.
+  const { org, adminUser } = await prisma.$transaction(async (tx) => {
     const org = await tx.organization.create({
       data: {
         uuid: randomUUID(),
@@ -139,9 +167,79 @@ async function createOrganization(req, res) {
       },
     });
 
-    return org;
+    // Random, unguessable, and never told to anyone — this hash exists
+    // only to satisfy the column's NOT NULL constraint until the real
+    // owner sets their own password via the reset link below.
+    const placeholderPassword = randomBytes(32).toString("hex");
+    const passwordHash = await bcrypt.hash(placeholderPassword, 12);
+
+    const adminUser = await tx.user.create({
+      data: {
+        uuid: randomUUID(),
+        organizationId: org.id,
+        branchId: null,
+        roleId: orgAdminRole.id,
+        name: ownerName || name,
+        email,
+        phone: phone || null,
+        passwordHash,
+        status: "active",
+        // true, not false — unlike createStaff()'s brand-new accounts,
+        // getting to this point already required either a Super Admin
+        // manually creating this organization, or a registration request
+        // that a Super Admin reviewed and approved. Requiring a SEPARATE
+        // email-verification round trip on top of that would just be
+        // friction for no real safety gain here.
+        emailVerified: true,
+      },
+    });
+
+    return { org, adminUser };
   });
 
+  // Fire-and-forget, same reasoning as every other notification in this
+  // app — org creation already succeeded by the time this runs; a flaky
+  // email provider should never turn that into a failed API response.
+  const rawToken = await issueToken({ type: "password_reset", ownerType: "user", ownerId: adminUser.id });
+  const setPasswordLink = `${process.env.FRONTEND_URL || "http://localhost:5173"}/reset-password?token=${rawToken}`;
+  // Sent on BOTH channels, not just one — email had gone unconfirmed for
+  // a while during testing, and a new Org Admin with no way to log in at
+  // all is a real problem, not just an inconvenience. WhatsApp stays out
+  // of this: it's still a stub in this codebase (never wired to a real
+  // provider — see notification.service.js's sendWhatsapp), so claiming
+  // it as a working channel here would just be a second silent failure
+  // instead of one.
+  const message = `Welcome to the platform! ${name} is ready to go. Set your password to log in as its Org Admin: ${setPasswordLink} (this link expires in 30 minutes)`;
+
+  notifyInBackground({
+    organizationId: org.id,
+    recipientType: "user",
+    recipientId: adminUser.id,
+    channel: "email",
+    message,
+  });
+
+  if (phone) {
+    notifyInBackground({
+      organizationId: org.id,
+      recipientType: "user",
+      recipientId: adminUser.id,
+      channel: "sms",
+      message,
+    });
+  }
+
+  return org;
+}
+
+async function createOrganization(req, res) {
+  const { name, email, businessTypeId, phone, logoUrl } = req.body;
+
+  if (!name || !email || !businessTypeId) {
+    return res.status(400).json({ error: "name, email, and businessTypeId are required" });
+  }
+
+  const organization = await createOrganizationCore({ name, email, businessTypeId, phone, logoUrl });
   return res.status(201).json(serializeOrg(organization));
 }
 
@@ -255,6 +353,7 @@ module.exports = {
   getPublicOrganization,
   searchPublicOrganizations,
   createOrganization,
+  createOrganizationCore,
   listOrganizations,
   getOrganization,
   updateOrganizationStatus,

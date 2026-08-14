@@ -61,6 +61,7 @@ model Organization {
   payments             Payment[]
   notifications        Notification[]
   auditLogs            AuditLog[]
+  organizationRequests OrganizationRequest[]
 
   @@index([status])
   @@map("organizations")
@@ -157,20 +158,7 @@ model User {
   phone          String?    @db.VarChar(30)
   passwordHash   String     @map("password_hash") @db.VarChar(255)
   status         UserStatus @default(active)
-  // Defaults to true (not false) specifically so this migration does NOT
-  // lock out the existing seeded users, none of whom ever went through a
-  // verification flow (because no flow existed until now — see
-  // AuthToken below). Only accounts created through a FUTURE "invite
-  // staff" endpoint would ever start out false. See auth.controller.js
-  // login() for how this gate actually gets enforced.
   emailVerified  Boolean    @default(true) @map("email_verified")
-  // Null means "password has never been reset since account creation" —
-  // nothing to compare against, so refresh() never rejects a token for a
-  // user who's never used this feature. Set on every successful password
-  // reset; auth.controller.js's refresh() compares this against the
-  // refresh token's issued-at time to force re-login (see the comment
-  // there for why THIS is the safer place to enforce it, not the
-  // high-traffic authenticate() middleware).
   passwordChangedAt DateTime? @map("password_changed_at")
   lastLoginAt    DateTime?  @map("last_login_at")
   createdAt      DateTime   @default(now()) @map("created_at")
@@ -205,11 +193,6 @@ model Customer {
   phone        String         @unique @db.VarChar(30)
   email        String?        @db.VarChar(150)
   passwordHash String?        @map("password_hash") @db.VarChar(255)
-  // Same mechanism as User.passwordChangedAt — null until the customer
-  // ever resets a password. A customer with no password at all (the
-  // normal guest/quick-registered case) simply never has this set, and
-  // never goes through password reset in the first place since there's
-  // no password to forget.
   passwordChangedAt DateTime? @map("password_changed_at")
   status       CustomerStatus @default(active)
   createdAt    DateTime       @default(now()) @map("created_at")
@@ -629,6 +612,8 @@ model OrganizationRequest {
   reviewNotes       String?   @map("review_notes") @db.VarChar(500)
   reviewedAt        DateTime? @map("reviewed_at")
   reviewedBy        BigInt?   @map("reviewed_by")
+  createdOrganizationId  BigInt?       @map("created_organization_id")
+  createdOrganization    Organization? @relation(fields: [createdOrganizationId], references: [id], onDelete: SetNull)
   createdAt         DateTime  @default(now()) @map("created_at")
 
   reviewer User? @relation(fields: [reviewedBy], references: [id], onDelete: SetNull)

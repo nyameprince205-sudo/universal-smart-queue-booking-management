@@ -24,6 +24,9 @@
     "socket.io": "^4.7.5"
   },
   "devDependencies": {
+    "@babel/generator": "^8.0.0",
+    "@babel/parser": "^8.0.4",
+    "@babel/traverse": "^8.0.4",
     "nodemon": "^3.1.4",
     "prisma": "^5.18.0"
   }

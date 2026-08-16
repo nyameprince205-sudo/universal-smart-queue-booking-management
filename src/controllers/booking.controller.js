@@ -1,52 +1,53 @@
 const prisma = require("../config/db");
-const { randomUUID } = require("crypto");
-const { notifyInBackground, getPreferredChannel } = require("../services/notification.service");
-const { logActivity } = require("../services/auditLog.service");
-const { toJSONSafe } = require("../utils/serialize");
-
-// A booking's status is a proper state machine, not a free-for-all field.
-// This table is the single source of truth for "what can become what" —
-// every write to `status` in this file goes through canTransition() first,
-// so the rule lives in exactly one place instead of being re-implemented
-// (and potentially re-implemented WRONG) in every route that touches it.
-//
-// Notice `checked_in` isn't reachable from here at all — that transition
-// deliberately only happens through the queue check-in flow (Phase 11),
-// because a booking becoming checked_in should always mean a real queue
-// ticket now exists for it, not just a status field flipping in isolation.
+const {
+  randomUUID
+} = require("crypto");
+const {
+  notifyInBackground,
+  getPreferredChannel
+} = require("../services/notification.service");
+const {
+  logActivity
+} = require("../services/auditLog.service");
+const {
+  toJSONSafe
+} = require("../utils/serialize");
 const ALLOWED_TRANSITIONS = {
   pending: ["confirmed", "cancelled"],
-  confirmed: ["cancelled", "no_show"], // checked_in happens via check-in, not this endpoint
+  confirmed: ["cancelled", "no_show"],
   checked_in: ["completed", "cancelled"],
-  cancelled: [], // terminal
-  completed: [], // terminal
-  no_show: [], // terminal
+  cancelled: [],
+  completed: [],
+  no_show: []
 };
-
 function canTransition(from, to) {
   return (ALLOWED_TRANSITIONS[from] || []).includes(to);
 }
-
-// Shared core used by BOTH creation paths below — the only difference
-// between "staff books on a customer's behalf" and "a customer books for
-// themselves" is WHERE organizationId and customerId come from, not what
-// happens once we have them. Keeping that logic in one place means a bug
-// fix here fixes both paths at once.
-async function createBookingCore({ organizationId, branchId, customerId, serviceId, bookingDate, bookingTime, partySize, notes, performedByUserId }) {
-  // Validate that the branch and service actually belong to the claimed
-  // organization. This matters most on the customer self-service path —
-  // a customer supplies organizationId/branchId/serviceId directly in the
-  // request body (they have no tenant middleware scoping it for them), so
-  // without this check a malicious request could mix IDs from different
-  // organizations and create a nonsensical (or exploitable) booking.
-  const [branch, service] = await Promise.all([
-    prisma.branch.findFirst({ where: { id: branchId, organizationId } }),
-    prisma.service.findFirst({ where: { id: serviceId, organizationId } }),
-  ]);
+async function createBookingCore({
+  organizationId,
+  branchId,
+  customerId,
+  serviceId,
+  bookingDate,
+  bookingTime,
+  partySize,
+  notes,
+  performedByUserId
+}) {
+  const [branch, service] = await Promise.all([prisma.branch.findFirst({
+    where: {
+      id: branchId,
+      organizationId
+    }
+  }), prisma.service.findFirst({
+    where: {
+      id: serviceId,
+      organizationId
+    }
+  })]);
   if (!branch) throw httpError(400, "branchId does not belong to this organization");
   if (!service) throw httpError(400, "serviceId does not belong to this organization");
-
-  const booking = await prisma.$transaction(async (tx) => {
+  const booking = await prisma.$transaction(async tx => {
     const created = await tx.booking.create({
       data: {
         uuid: randomUUID(),
@@ -58,74 +59,73 @@ async function createBookingCore({ organizationId, branchId, customerId, service
         bookingTime: new Date(`1970-01-01T${bookingTime}Z`),
         partySize: partySize || 1,
         notes: notes || null,
-        status: "pending",
-      },
+        status: "pending"
+      }
     });
-
-    // Cached aggregate pattern (see DATABASE_DESIGN.md Section 5) — kept
-    // as an upsert rather than a raw COUNT(*) on every dashboard load.
     await tx.customerOrganization.upsert({
-      where: { uq_customer_org: { customerId, organizationId } },
-      update: { totalBookings: { increment: 1 }, lastInteractionAt: new Date() },
+      where: {
+        uq_customer_org: {
+          customerId,
+          organizationId
+        }
+      },
+      update: {
+        totalBookings: {
+          increment: 1
+        },
+        lastInteractionAt: new Date()
+      },
       create: {
         customerId,
         organizationId,
         firstInteractionAt: new Date(),
         lastInteractionAt: new Date(),
-        totalBookings: 1,
-      },
+        totalBookings: 1
+      }
     });
-
     return created;
   });
-
-  // Fired AFTER the transaction commits, not inside it — a slow or failed
-  // notification send should never roll back a booking that was already
-  // successfully created. notifyInBackground doesn't block this function
-  // either, for the same reason.
   const channel = await getPreferredChannel(organizationId);
   notifyInBackground({
     organizationId,
     recipientType: "customer",
     recipientId: customerId,
     channel,
-    message: `Your booking for ${bookingDate} at ${bookingTime} has been received and is pending confirmation.`,
+    message: `Your booking for ${bookingDate} at ${bookingTime} has been received and is pending confirmation.`
   });
-
-  // Module 4: logged ONCE here rather than in each of the three callers —
-  // same reasoning this function already existed for (one place, not three
-  // near-duplicates). performedByUserId is only ever set on the staff path
-  // (createBooking); a customer or guest creating their own booking isn't
-  // a User record at all, so there's genuinely no staff actor to attribute
-  // it to — null is the honest answer, not a bug.
   logActivity({
     organizationId,
     userId: performedByUserId || null,
     action: "booking_created",
     entityType: "booking",
     entityId: booking.id,
-    metadata: { bookingDate, bookingTime },
+    metadata: {
+      bookingDate,
+      bookingTime
+    }
   });
-
   return booking;
 }
-
 function httpError(status, message) {
   const err = new Error(message);
   err.status = status;
   return err;
 }
-
-// ---- Staff / Org Admin: create a booking on a customer's behalf ----
 async function createBooking(req, res) {
-  const { branchId, customerId, serviceId, bookingDate, bookingTime, partySize, notes } = req.body;
-
+  const {
+    branchId,
+    customerId,
+    serviceId,
+    bookingDate,
+    bookingTime,
+    partySize,
+    notes
+  } = req.body;
   if (!branchId || !customerId || !serviceId || !bookingDate || !bookingTime) {
     return res.status(400).json({
-      error: "branchId, customerId, serviceId, bookingDate, and bookingTime are required",
+      error: "branchId, customerId, serviceId, bookingDate, and bookingTime are required"
     });
   }
-
   const booking = await createBookingCore({
     organizationId: req.tenant.organizationId,
     branchId: BigInt(branchId),
@@ -135,21 +135,10 @@ async function createBooking(req, res) {
     bookingTime,
     partySize,
     notes,
-    performedByUserId: req.auth?.userId ? BigInt(req.auth.userId) : null,
+    performedByUserId: req.auth?.userId ? BigInt(req.auth.userId) : null
   });
-
   return res.status(201).json(serialize(booking));
 }
-
-// ---- Task 4: Guest checkout — book with NO account at all ----
-// Deliberately does NOT import/reuse customer.controller.js's quickRegister
-// — that function is wired to req.tenant (an authenticated staff member's
-// org) and upserts a CustomerOrganization row using it, which doesn't
-// exist for an unauthenticated public request. Rather than reshape a
-// staff-only function to also handle a public caller (risking a bug in a
-// path Task 6 says must keep working), this duplicates the small
-// find-or-create-by-phone snippet locally — a few lines repeated is a much
-// smaller risk than entangling two different trust levels in one function.
 async function createGuestBooking(req, res) {
   const {
     organizationId,
@@ -161,20 +150,18 @@ async function createGuestBooking(req, res) {
     notes,
     customerName,
     customerPhone,
-    customerEmail,
+    customerEmail
   } = req.body;
-
   if (!organizationId || !branchId || !serviceId || !bookingDate || !bookingTime || !customerName || !customerPhone) {
     return res.status(400).json({
-      error:
-        "organizationId, branchId, serviceId, bookingDate, bookingTime, customerName, and customerPhone are required",
+      error: "organizationId, branchId, serviceId, bookingDate, bookingTime, customerName, and customerPhone are required"
     });
   }
-
-  // Same find-or-create-by-phone behavior as staff quick-register: a
-  // returning guest (same phone number, whether or not they ever made an
-  // account) is recognized as the same customer, not duplicated.
-  let customer = await prisma.customer.findUnique({ where: { phone: customerPhone } });
+  let customer = await prisma.customer.findUnique({
+    where: {
+      phone: customerPhone
+    }
+  });
   if (!customer) {
     customer = await prisma.customer.create({
       data: {
@@ -182,18 +169,10 @@ async function createGuestBooking(req, res) {
         name: customerName,
         phone: customerPhone,
         email: customerEmail || null,
-        status: "active",
-        // No passwordHash — exactly like a staff quick-registered walk-in,
-        // this is a platform identity for the booking to point to, not an
-        // account. Task 4 is explicit that creating an account is OPTIONAL;
-        // this guest can still register properly later using this same
-        // phone number (customer.controller.js's register() looks up by
-        // phone too) and everything under this identity — this booking
-        // included — becomes visible in their account from that point on.
-      },
+        status: "active"
+      }
     });
   }
-
   const booking = await createBookingCore({
     organizationId: BigInt(organizationId),
     branchId: BigInt(branchId),
@@ -202,121 +181,139 @@ async function createGuestBooking(req, res) {
     bookingDate,
     bookingTime,
     partySize,
-    notes,
+    notes
   });
-
   return res.status(201).json(serialize(booking));
 }
-
-// ---- Customer: book for themselves ----
-// No req.tenant here at all — customer routes aren't tenant-scoped, so the
-// organization they want to book with is explicit input, validated by
-// createBookingCore's branch/service ownership check above.
 async function createMyBooking(req, res) {
-  const { organizationId, branchId, serviceId, bookingDate, bookingTime, partySize, notes } = req.body;
-
+  const {
+    organizationId,
+    branchId,
+    serviceId,
+    bookingDate,
+    bookingTime,
+    partySize,
+    notes
+  } = req.body;
   if (!organizationId || !branchId || !serviceId || !bookingDate || !bookingTime) {
     return res.status(400).json({
-      error: "organizationId, branchId, serviceId, bookingDate, and bookingTime are required",
+      error: "organizationId, branchId, serviceId, bookingDate, and bookingTime are required"
     });
   }
-
   const booking = await createBookingCore({
     organizationId: BigInt(organizationId),
     branchId: BigInt(branchId),
-    customerId: BigInt(req.auth.userId), // <- the customer's OWN id from their JWT, never trusted from the body
+    customerId: BigInt(req.auth.userId),
     serviceId: BigInt(serviceId),
     bookingDate,
     bookingTime,
     partySize,
-    notes,
+    notes
   });
-
   return res.status(201).json(serialize(booking));
 }
-
-// ---- Staff / Org Admin: view bookings for their organization ----
 async function listBookings(req, res) {
-  const { date } = req.query;
-
-  const where = { organizationId: req.tenant.organizationId };
-  // A STAFF account's own branchId (from their JWT) always wins — never
-  // trust a client-supplied branchId to override that, or a staff member
-  // could view another branch's bookings just by changing a query param.
-  // An ORG_ADMIN's token carries no branchId at all (they're not scoped to
-  // one), so THEIR queries need an explicit ?branchId= to match whichever
-  // branch they're currently viewing — without this, listBookings silently
-  // mixed every branch's bookings together for any ORG_ADMIN caller.
+  const {
+    date
+  } = req.query;
+  const where = {
+    organizationId: req.tenant.organizationId
+  };
   if (req.tenant.branchId) {
     where.branchId = req.tenant.branchId;
   } else if (req.query.branchId) {
     where.branchId = BigInt(req.query.branchId);
   }
   if (date) where.bookingDate = new Date(date);
-
   const bookings = await prisma.booking.findMany({
     where,
-    orderBy: [{ bookingDate: "asc" }, { bookingTime: "asc" }],
-    include: { customer: { select: { name: true, phone: true } }, service: { select: { name: true } } },
+    orderBy: [{
+      bookingDate: "asc"
+    }, {
+      bookingTime: "asc"
+    }],
+    include: {
+      customer: {
+        select: {
+          name: true,
+          phone: true
+        }
+      },
+      service: {
+        select: {
+          name: true
+        }
+      }
+    }
   });
-
   return res.json(bookings.map(serialize));
 }
-
-// ---- Customer: view their OWN bookings, across every organization ----
 async function listMyBookings(req, res) {
   const bookings = await prisma.booking.findMany({
-    where: { customerId: BigInt(req.auth.userId) },
-    orderBy: [{ bookingDate: "desc" }],
-    include: {
-      organization: { select: { name: true } },
-      branch: { select: { name: true } },
-      service: { select: { name: true } },
-      // Phase 16 addition: a booking that's been checked in has a real
-      // live queue ticket behind it (see queue.controller.js's checkIn,
-      // which sets a booking's status to "checked_in" the moment this is
-      // created) — without this, a customer's own booking list had no way
-      // to lead them to their live tracking page; they could only ever
-      // reach it via the SMS link sent at check-in time, which is easy to
-      // lose. `take: 1` + newest-first because a booking realistically has
-      // at most one MEANINGFUL ticket at a time, even though the relation
-      // is technically one-to-many.
-      queueTickets: {
-        orderBy: { createdAt: "desc" },
-        take: 1,
-        select: { uuid: true, status: true, ticketNumber: true },
-      },
+    where: {
+      customerId: BigInt(req.auth.userId)
     },
+    orderBy: [{
+      bookingDate: "desc"
+    }],
+    include: {
+      organization: {
+        select: {
+          name: true
+        }
+      },
+      branch: {
+        select: {
+          name: true
+        }
+      },
+      service: {
+        select: {
+          name: true
+        }
+      },
+      queueTickets: {
+        orderBy: {
+          createdAt: "desc"
+        },
+        take: 1,
+        select: {
+          uuid: true,
+          status: true,
+          ticketNumber: true
+        }
+      }
+    }
   });
-
   return res.json(bookings.map(serialize));
 }
-
-// ---- Staff / Org Admin: move a booking through its lifecycle ----
 async function updateBookingStatus(req, res) {
-  const { status: nextStatus } = req.body;
-
+  const {
+    status: nextStatus
+  } = req.body;
   const booking = await prisma.booking.findFirst({
-    where: { id: BigInt(req.params.id), organizationId: req.tenant.organizationId },
+    where: {
+      id: BigInt(req.params.id),
+      organizationId: req.tenant.organizationId
+    }
   });
-  if (!booking) return res.status(404).json({ error: "Booking not found" });
-
+  if (!booking) return res.status(404).json({
+    error: "Booking not found"
+  });
   if (!canTransition(booking.status, nextStatus)) {
     return res.status(400).json({
       error: `Cannot move a booking from "${booking.status}" to "${nextStatus}"`,
-      allowedNextStatuses: ALLOWED_TRANSITIONS[booking.status] || [],
+      allowedNextStatuses: ALLOWED_TRANSITIONS[booking.status] || []
     });
   }
-
   const updated = await prisma.booking.update({
-    where: { id: booking.id },
-    data: { status: nextStatus },
+    where: {
+      id: booking.id
+    },
+    data: {
+      status: nextStatus
+    }
   });
-
-  // Unlike cancelMyBooking above, req.auth.userId here genuinely IS a
-  // staff/admin User id — this route is tenant-scoped and staff-only, not
-  // the customer's own endpoint — so attributing it is correct, not the
-  // same trap.
   if (nextStatus === "completed") {
     logActivity({
       organizationId: req.tenant.organizationId,
@@ -324,63 +321,47 @@ async function updateBookingStatus(req, res) {
       action: "appointment_completed",
       entityType: "booking",
       entityId: booking.id,
-      metadata: null,
+      metadata: null
     });
   }
-
   return res.json(serialize(updated));
 }
-
-// ---- Customer: cancel their OWN booking ----
-// A narrower, safer action than the staff endpoint above — a customer can
-// only ever move their own booking to "cancelled", never any other status,
-// and only if it's still in a cancellable state.
 async function cancelMyBooking(req, res) {
   const booking = await prisma.booking.findFirst({
-    where: { id: BigInt(req.params.id), customerId: BigInt(req.auth.userId) },
+    where: {
+      id: BigInt(req.params.id),
+      customerId: BigInt(req.auth.userId)
+    }
   });
-  if (!booking) return res.status(404).json({ error: "Booking not found" });
-
+  if (!booking) return res.status(404).json({
+    error: "Booking not found"
+  });
   if (!canTransition(booking.status, "cancelled")) {
     return res.status(400).json({
-      error: `A booking that is "${booking.status}" can no longer be cancelled`,
+      error: `A booking that is "${booking.status}" can no longer be cancelled`
     });
   }
-
   const updated = await prisma.booking.update({
-    where: { id: booking.id },
-    data: { status: "cancelled" },
+    where: {
+      id: booking.id
+    },
+    data: {
+      status: "cancelled"
+    }
   });
-
-  // userId is deliberately null here, not req.auth.userId — on THIS
-  // endpoint that value is the CUSTOMER's own id, and AuditLog.userId has
-  // a foreign key to the `users` (staff/admin) table specifically. Logging
-  // a customer id there would violate that FK and fail silently (this is
-  // fire-and-forget) — null is the honest, correct answer: a customer
-  // cancelling their own booking isn't a User-table actor at all.
   logActivity({
     organizationId: booking.organizationId,
     userId: null,
     action: "booking_cancelled",
     entityType: "booking",
     entityId: booking.id,
-    metadata: null,
+    metadata: null
   });
-
   return res.json(serialize(updated));
 }
-
-// Not currently broken — every BigInt field on Booking happens to be
-// covered by the list below today — but this is the exact same fragile
-// pattern that just caused a real "Do not know how to serialize a BigInt"
-// crash in queue.controller.js's serialize(): a manually maintained list
-// that silently stops being complete the moment a new BigInt field gets
-// added later and nobody remembers to add it here too. Hardened now,
-// before that happens, rather than after.
 function serialize(booking) {
   return toJSONSafe(booking);
 }
-
 module.exports = {
   listBookings,
   createBooking,
@@ -388,5 +369,5 @@ module.exports = {
   createGuestBooking,
   listMyBookings,
   updateBookingStatus,
-  cancelMyBooking,
+  cancelMyBooking
 };

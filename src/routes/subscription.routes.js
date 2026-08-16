@@ -9,41 +9,13 @@ const {
   initializeSubscription,
   verifySubscriptionPayment,
   paystackWebhook,
-  listPaymentHistory,
+  listPaymentHistory
 } = require("../controllers/subscription.controller");
-
 const router = express.Router();
-
-// Public — anyone can see pricing before signing up.
 router.get("/plans", asyncHandler(listPlans));
-
-// Paystack calls this directly — deliberately NO authenticate/requireTenant.
-// Authenticity is proven by the signature check inside the controller, not
-// a JWT (Paystack's servers don't have one, and shouldn't need one).
 router.post("/webhook", asyncHandler(paystackWebhook));
-
-// Tenant-scoped: Org Admin manages their own organization's subscription.
 router.get("/me", authenticate, requireTenant, asyncHandler(getMySubscription));
-router.post(
-  "/initialize",
-  authenticate,
-  requireTenant,
-  requireRole("ORG_ADMIN"),
-  asyncHandler(initializeSubscription)
-);
-router.get(
-  "/verify/:reference",
-  authenticate,
-  requireTenant,
-  requireRole("ORG_ADMIN"),
-  asyncHandler(verifySubscriptionPayment)
-);
-router.get(
-  "/payments",
-  authenticate,
-  requireTenant,
-  requireRole("ORG_ADMIN"),
-  asyncHandler(listPaymentHistory)
-);
-
+router.post("/initialize", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(initializeSubscription));
+router.get("/verify/:reference", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(verifySubscriptionPayment));
+router.get("/payments", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(listPaymentHistory));
 module.exports = router;

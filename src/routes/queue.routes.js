@@ -11,13 +11,10 @@ const {
   markMissed,
   liveBoard,
   createCounter,
-  listCounters,
+  listCounters
 } = require("../controllers/queue.controller");
-
 const router = express.Router();
-
 router.use(authenticate, requireTenant);
-
 router.get("/board", asyncHandler(liveBoard));
 router.get("/counters", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(listCounters));
 router.post("/counters", requireRole("ORG_ADMIN"), asyncHandler(createCounter));
@@ -26,5 +23,4 @@ router.post("/call-next", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(callNe
 router.patch("/:id/serving", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(markServing));
 router.patch("/:id/complete", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(completeTicket));
 router.patch("/:id/missed", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(markMissed));
-
 module.exports = router;

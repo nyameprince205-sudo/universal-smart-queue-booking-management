@@ -11,13 +11,9 @@ const {
   getBranchComparison,
   getRevenueReport,
   getExecutiveSummary,
-  getHomeDashboard,
+  getHomeDashboard
 } = require("../controllers/analytics.controller");
-
 const router = express.Router();
-
-// ORG_ADMIN-only, same reasoning as report.routes.js — these are business
-// performance numbers for the owner, not a front-line staff concern.
 router.get("/service-popularity", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(getServicePopularity));
 router.get("/peak-hours", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(getPeakHours));
 router.get("/trends", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(getBookingTrends));
@@ -26,5 +22,4 @@ router.get("/branches", authenticate, requireTenant, requireRole("ORG_ADMIN"), a
 router.get("/revenue", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(getRevenueReport));
 router.get("/executive-summary", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(getExecutiveSummary));
 router.get("/home-dashboard", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(getHomeDashboard));
-
 module.exports = router;

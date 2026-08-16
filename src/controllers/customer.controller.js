@@ -1,30 +1,42 @@
 const bcrypt = require("bcryptjs");
-const { randomUUID } = require("crypto");
+const {
+  randomUUID
+} = require("crypto");
 const prisma = require("../config/db");
-const { signCustomerAccessToken, signCustomerRefreshToken, verifyRefreshToken } = require("../utils/jwt");
-const { issueToken } = require("../services/authToken.service");
-const { sendEmail } = require("../services/notification.service");
-
-// ---- Customer self-service (public, then self-authenticated) ----
-// Notice NONE of these functions take an organizationId anywhere — that's
-// the whole point of Section 2 in this phase's explanation. A customer
-// exists once, platform-wide, before they've ever interacted with a single
-// organization.
-
+const {
+  signCustomerAccessToken,
+  signCustomerRefreshToken,
+  verifyRefreshToken
+} = require("../utils/jwt");
+const {
+  issueToken
+} = require("../services/authToken.service");
+const {
+  sendEmail
+} = require("../services/notification.service");
 async function register(req, res) {
-  const { name, phone, email, password } = req.body;
-
+  const {
+    name,
+    phone,
+    email,
+    password
+  } = req.body;
   if (!name || !phone || !password) {
-    return res.status(400).json({ error: "name, phone, and password are required" });
+    return res.status(400).json({
+      error: "name, phone, and password are required"
+    });
   }
-
-  const existing = await prisma.customer.findUnique({ where: { phone } });
+  const existing = await prisma.customer.findUnique({
+    where: {
+      phone
+    }
+  });
   if (existing) {
-    return res.status(409).json({ error: "A customer with this phone number already exists" });
+    return res.status(409).json({
+      error: "A customer with this phone number already exists"
+    });
   }
-
   const passwordHash = await bcrypt.hash(password, 12);
-
   const customer = await prisma.customer.create({
     data: {
       uuid: randomUUID(),
@@ -32,191 +44,213 @@ async function register(req, res) {
       phone,
       email: email || null,
       passwordHash,
-      status: "active",
-    },
+      status: "active"
+    }
   });
-
   const accessToken = signCustomerAccessToken(customer);
   const refreshToken = signCustomerRefreshToken(customer);
-
   return res.status(201).json({
     accessToken,
     refreshToken,
-    customer: serializeCustomer(customer),
+    customer: serializeCustomer(customer)
   });
 }
-
 async function login(req, res) {
-  const { phone, password } = req.body;
-
+  const {
+    phone,
+    password
+  } = req.body;
   if (!phone || !password) {
-    return res.status(400).json({ error: "phone and password are required" });
+    return res.status(400).json({
+      error: "phone and password are required"
+    });
   }
-
-  const customer = await prisma.customer.findUnique({ where: { phone } });
-
-  // Same deliberately-vague error as staff login (auth.controller.js) —
-  // don't let a client learn whether a phone number is registered at all.
+  const customer = await prisma.customer.findUnique({
+    where: {
+      phone
+    }
+  });
   if (!customer || customer.status !== "active" || !customer.passwordHash) {
-    return res.status(401).json({ error: "Invalid phone number or password" });
+    return res.status(401).json({
+      error: "Invalid phone number or password"
+    });
   }
-
   const matches = await bcrypt.compare(password, customer.passwordHash);
   if (!matches) {
-    return res.status(401).json({ error: "Invalid phone number or password" });
+    return res.status(401).json({
+      error: "Invalid phone number or password"
+    });
   }
-
   const accessToken = signCustomerAccessToken(customer);
   const refreshToken = signCustomerRefreshToken(customer);
-
-  return res.json({ accessToken, refreshToken, customer: serializeCustomer(customer) });
+  return res.json({
+    accessToken,
+    refreshToken,
+    customer: serializeCustomer(customer)
+  });
 }
-
 async function refresh(req, res) {
-  const { refreshToken } = req.body;
-  if (!refreshToken) return res.status(400).json({ error: "refreshToken is required" });
-
+  const {
+    refreshToken
+  } = req.body;
+  if (!refreshToken) return res.status(400).json({
+    error: "refreshToken is required"
+  });
   let payload;
   try {
     payload = verifyRefreshToken(refreshToken);
   } catch (err) {
-    return res.status(401).json({ error: "Invalid or expired refresh token" });
-  }
-
-  const customer = await prisma.customer.findUnique({ where: { id: BigInt(payload.sub) } });
-  if (!customer || customer.status !== "active") {
-    return res.status(401).json({ error: "Invalid or expired refresh token" });
-  }
-
-  // Same mechanism as auth.controller.js's refresh() — see the comment
-  // there for the full reasoning. A customer who resets their password
-  // gets this same "old refresh tokens stop working" protection.
-  if (customer.passwordChangedAt && payload.iat * 1000 < customer.passwordChangedAt.getTime()) {
-    return res.status(401).json({ error: "Your password was changed. Please log in again." });
-  }
-
-  return res.json({ accessToken: signCustomerAccessToken(customer) });
-}
-
-async function getMe(req, res) {
-  const customer = await prisma.customer.findUnique({ where: { id: BigInt(req.auth.userId) } });
-  if (!customer) return res.status(404).json({ error: "Customer not found" });
-  return res.json(serializeCustomer(customer));
-}
-
-// A customer's relationship history spans EVERY organization they've used —
-// this is the payoff of the customers/customer_organizations split made
-// visible: one customer, many businesses, one query.
-async function getMyOrganizationHistory(req, res) {
-  const relationships = await prisma.customerOrganization.findMany({
-    where: { customerId: BigInt(req.auth.userId) },
-    include: { organization: { select: { name: true, slug: true } } },
-  });
-
-  return res.json(
-    relationships.map((r) => ({
-      organizationName: r.organization.name,
-      organizationSlug: r.organization.slug,
-      totalBookings: r.totalBookings,
-      firstInteractionAt: r.firstInteractionAt,
-      lastInteractionAt: r.lastInteractionAt,
-      status: r.status,
-    }))
-  );
-}
-
-// ---- Org Admin: view every customer who has interacted with THEIR org ----
-// Directly answers a real, previously-unaddressed question: which
-// customers has this business actually served — whether they made a full
-// self-service account (register() above) or were quick-registered by
-// staff during check-in (quickRegister() below) or a guest booking
-// (booking.controller.js's createGuestBooking). All three paths already
-// write to the SAME customer_organizations table (see quickRegister's
-// upsert, and createBookingCore's identical upsert on every booking) —
-// this reads back what was already being recorded, nothing new written.
-async function listMyCustomers(req, res) {
-  const relationships = await prisma.customerOrganization.findMany({
-    where: { organizationId: req.tenant.organizationId },
-    include: {
-      customer: { select: { id: true, name: true, phone: true, email: true, passwordHash: true } },
-    },
-    orderBy: { lastInteractionAt: "desc" },
-  });
-
-  return res.json(
-    relationships.map((r) => ({
-      customerId: r.customer.id.toString(),
-      name: r.customer.name,
-      phone: r.customer.phone,
-      email: r.customer.email,
-      // Never expose the hash itself — just whether one exists, which is
-      // the actual useful signal: did this person create their own
-      // account, or were they only ever quick-registered/booked as a guest.
-      hasAccount: !!r.customer.passwordHash,
-      totalBookings: r.totalBookings,
-      firstInteractionAt: r.firstInteractionAt,
-      lastInteractionAt: r.lastInteractionAt,
-      relationshipStatus: r.status,
-    }))
-  );
-}
-
-// ---- Staff-side (tenant-scoped): look up or quick-register a customer ----
-// Used during check-in (Phase 11) when staff need a customerId to attach to
-// a booking/queue ticket, and the person may or may not already exist on
-// the platform (they might be a first-timer here, but a regular at a
-// completely different organization).
-
-async function lookupByPhone(req, res) {
-  const { phone } = req.query;
-  if (!phone) return res.status(400).json({ error: "phone query parameter is required" });
-
-  const customer = await prisma.customer.findUnique({ where: { phone } });
-  if (!customer) return res.status(404).json({ error: "No customer found with that phone number" });
-
-  return res.json(serializeCustomer(customer));
-}
-
-async function quickRegister(req, res) {
-  const { name, phone, email } = req.body;
-  if (!name || !phone) return res.status(400).json({ error: "name and phone are required" });
-
-  // Staff-assisted registration deliberately has NO password — a walk-in
-  // customer isn't creating an account right now, staff are just getting
-  // them a platform identity so a booking/queue ticket has someone to point
-  // to. The customer can set a password later via a "claim your account"
-  // flow if you build one — out of scope for this phase.
-  let customer = await prisma.customer.findUnique({ where: { phone } });
-
-  if (!customer) {
-    customer = await prisma.customer.create({
-      data: { uuid: randomUUID(), name, phone, email: email || null, status: "active" },
+    return res.status(401).json({
+      error: "Invalid or expired refresh token"
     });
   }
-
-  // Immediately establish (or touch) this organization's relationship to
-  // the customer — this is the same upsert pattern used in
-  // booking.controller.js when a booking is created.
+  const customer = await prisma.customer.findUnique({
+    where: {
+      id: BigInt(payload.sub)
+    }
+  });
+  if (!customer || customer.status !== "active") {
+    return res.status(401).json({
+      error: "Invalid or expired refresh token"
+    });
+  }
+  if (customer.passwordChangedAt && payload.iat * 1000 < customer.passwordChangedAt.getTime()) {
+    return res.status(401).json({
+      error: "Your password was changed. Please log in again."
+    });
+  }
+  return res.json({
+    accessToken: signCustomerAccessToken(customer)
+  });
+}
+async function getMe(req, res) {
+  const customer = await prisma.customer.findUnique({
+    where: {
+      id: BigInt(req.auth.userId)
+    }
+  });
+  if (!customer) return res.status(404).json({
+    error: "Customer not found"
+  });
+  return res.json(serializeCustomer(customer));
+}
+async function getMyOrganizationHistory(req, res) {
+  const relationships = await prisma.customerOrganization.findMany({
+    where: {
+      customerId: BigInt(req.auth.userId)
+    },
+    include: {
+      organization: {
+        select: {
+          name: true,
+          slug: true
+        }
+      }
+    }
+  });
+  return res.json(relationships.map(r => ({
+    organizationName: r.organization.name,
+    organizationSlug: r.organization.slug,
+    totalBookings: r.totalBookings,
+    firstInteractionAt: r.firstInteractionAt,
+    lastInteractionAt: r.lastInteractionAt,
+    status: r.status
+  })));
+}
+async function listMyCustomers(req, res) {
+  const relationships = await prisma.customerOrganization.findMany({
+    where: {
+      organizationId: req.tenant.organizationId
+    },
+    include: {
+      customer: {
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          email: true,
+          passwordHash: true
+        }
+      }
+    },
+    orderBy: {
+      lastInteractionAt: "desc"
+    }
+  });
+  return res.json(relationships.map(r => ({
+    customerId: r.customer.id.toString(),
+    name: r.customer.name,
+    phone: r.customer.phone,
+    email: r.customer.email,
+    hasAccount: !!r.customer.passwordHash,
+    totalBookings: r.totalBookings,
+    firstInteractionAt: r.firstInteractionAt,
+    lastInteractionAt: r.lastInteractionAt,
+    relationshipStatus: r.status
+  })));
+}
+async function lookupByPhone(req, res) {
+  const {
+    phone
+  } = req.query;
+  if (!phone) return res.status(400).json({
+    error: "phone query parameter is required"
+  });
+  const customer = await prisma.customer.findUnique({
+    where: {
+      phone
+    }
+  });
+  if (!customer) return res.status(404).json({
+    error: "No customer found with that phone number"
+  });
+  return res.json(serializeCustomer(customer));
+}
+async function quickRegister(req, res) {
+  const {
+    name,
+    phone,
+    email
+  } = req.body;
+  if (!name || !phone) return res.status(400).json({
+    error: "name and phone are required"
+  });
+  let customer = await prisma.customer.findUnique({
+    where: {
+      phone
+    }
+  });
+  if (!customer) {
+    customer = await prisma.customer.create({
+      data: {
+        uuid: randomUUID(),
+        name,
+        phone,
+        email: email || null,
+        status: "active"
+      }
+    });
+  }
   await prisma.customerOrganization.upsert({
     where: {
       uq_customer_org: {
         customerId: customer.id,
-        organizationId: req.tenant.organizationId,
-      },
+        organizationId: req.tenant.organizationId
+      }
     },
-    update: { lastInteractionAt: new Date() },
+    update: {
+      lastInteractionAt: new Date()
+    },
     create: {
       customerId: customer.id,
       organizationId: req.tenant.organizationId,
       firstInteractionAt: new Date(),
       lastInteractionAt: new Date(),
-      totalBookings: 0,
-    },
+      totalBookings: 0
+    }
   });
-
   return res.status(201).json(serializeCustomer(customer));
 }
-
 function serializeCustomer(customer) {
   return {
     id: customer.id.toString(),
@@ -224,46 +258,39 @@ function serializeCustomer(customer) {
     name: customer.name,
     phone: customer.phone,
     email: customer.email,
-    status: customer.status,
+    status: customer.status
   };
 }
-
-// ---- Task 1 (customer side): Forgot Password ----
-// Uses PHONE, not email — a customer's email is optional (see
-// Customer.email in schema.prisma) and phone is what they actually log in
-// with (see login() above), so phone is the identifier that's guaranteed
-// to exist for every customer who has a password to forget in the first
-// place. Actual reset submission still goes through the SHARED
-// /auth/reset-password endpoint (auth.controller.js) — only the request
-// step differs by account type.
 async function forgotPassword(req, res) {
-  const { phone } = req.body;
-  if (!phone) return res.status(400).json({ error: "phone is required" });
-
-  const customer = await prisma.customer.findUnique({ where: { phone } });
-
-  // Same non-enumeration principle as the staff-side version: identical
-  // response whether or not the phone number is registered, and whether
-  // or not that customer even has a password set (a guest/quick-registered
-  // customer has no passwordHash — nothing to reset, but we still don't
-  // want the response to reveal that distinction to the caller).
+  const {
+    phone
+  } = req.body;
+  if (!phone) return res.status(400).json({
+    error: "phone is required"
+  });
+  const customer = await prisma.customer.findUnique({
+    where: {
+      phone
+    }
+  });
   if (customer && customer.status === "active" && customer.passwordHash) {
-    const rawToken = await issueToken({ type: "password_reset", ownerType: "customer", ownerId: customer.id });
+    const rawToken = await issueToken({
+      type: "password_reset",
+      ownerType: "customer",
+      ownerId: customer.id
+    });
     const resetLink = `${process.env.FRONTEND_URL || "http://localhost:5173"}/reset-password?token=${rawToken}`;
     const message = `Reset your password: ${resetLink} (this link expires in 30 minutes)`;
-    // Email if they have one on file, otherwise fall back to the phone
-    // number itself via the same stubbed sender pattern used elsewhere —
-    // see notification.service.js's SENDERS.
     if (customer.email) {
       await sendEmail(customer.email, message);
     } else {
-      await sendEmail(customer.phone, message); // stub logs it either way; a real SMS provider would go here instead
+      await sendEmail(customer.phone, message);
     }
   }
-
-  return res.json({ message: "If an account exists with that phone number, a password reset link has been sent." });
+  return res.json({
+    message: "If an account exists with that phone number, a password reset link has been sent."
+  });
 }
-
 module.exports = {
   register,
   login,
@@ -273,5 +300,5 @@ module.exports = {
   listMyCustomers,
   lookupByPhone,
   quickRegister,
-  forgotPassword,
+  forgotPassword
 };

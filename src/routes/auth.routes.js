@@ -11,6 +11,8 @@ const {
   resendVerification
 } = require("../controllers/auth.controller");
 const router = express.Router();
+const { loginLimiter } = require("../middleware/rateLimit.middleware");
+router.post("/login", loginLimiter, asyncHandler(login));
 router.post("/login", asyncHandler(login));
 router.post("/refresh", asyncHandler(refresh));
 router.post("/forgot-password", asyncHandler(forgotPassword));

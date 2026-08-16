@@ -15,6 +15,8 @@ const {
   forgotPassword
 } = require("../controllers/customer.controller");
 const router = express.Router();
+const { loginLimiter } = require("../middleware/rateLimit.middleware");
+router.post("/login", loginLimiter, asyncHandler(login));
 router.post("/register", asyncHandler(register));
 router.post("/login", asyncHandler(login));
 router.post("/refresh", asyncHandler(refresh));

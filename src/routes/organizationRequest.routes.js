@@ -8,6 +8,8 @@ const {
   reviewOrganizationRequest
 } = require("../controllers/organizationRequest.controller");
 const router = express.Router();
+const { submissionLimiter } = require("../middleware/rateLimit.middleware");
+router.post("/", submissionLimiter, asyncHandler(submitOrganizationRequest));
 router.post("/", asyncHandler(submitOrganizationRequest));
 router.get("/", authenticate, requireRole("SUPER_ADMIN"), asyncHandler(listOrganizationRequests));
 router.patch("/:id/review", authenticate, requireRole("SUPER_ADMIN"), asyncHandler(reviewOrganizationRequest));

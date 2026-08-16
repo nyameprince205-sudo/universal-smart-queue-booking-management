@@ -16,7 +16,15 @@ const app = express();
 // --- Global middleware, in an order that matters ---
 
 // 1. CORS must run before routes so preflight requests are handled correctly.
-app.use(cors());
+// FRONTEND_URL is the same env var socket.js's own CORS setup and
+// auth.controller.js's password-reset links already use — one setting
+// controls all three, instead of three separate places to remember to
+// update when this app actually goes live. Falls back to the local dev
+// server's own origin so nothing breaks before that variable is set.
+// A bare cors() with no options (the old version of this file) allows
+// EVERY origin — harmless for local development, a real gap the moment
+// this API is reachable on the public internet.
+app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173" }));
 
 // 2. morgan logs every incoming request — invaluable while you're building
 //    and testing manually with Postman; "dev" format is concise and colorized.

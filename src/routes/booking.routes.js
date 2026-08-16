@@ -13,6 +13,8 @@ const {
   cancelMyBooking
 } = require("../controllers/booking.controller");
 const router = express.Router();
+const { guestBookingLimiter } = require("../middleware/rateLimit.middleware");
+router.post("/guest", guestBookingLimiter, asyncHandler(createGuestBooking));
 router.post("/guest", asyncHandler(createGuestBooking));
 router.get("/mine", authenticate, requireRole("CUSTOMER"), asyncHandler(listMyBookings));
 router.post("/mine", authenticate, requireRole("CUSTOMER"), asyncHandler(createMyBooking));

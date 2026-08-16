@@ -8,7 +8,9 @@ const {
   markContactSubmissionRead
 } = require("../controllers/contact.controller");
 const router = express.Router();
-const { submissionLimiter } = require("../middleware/rateLimit.middleware");
+const {
+  submissionLimiter
+} = require("../middleware/rateLimit.middleware");
 router.post("/", submissionLimiter, asyncHandler(submitContactForm));
 router.post("/", asyncHandler(submitContactForm));
 router.get("/", authenticate, requireRole("SUPER_ADMIN"), asyncHandler(listContactSubmissions));

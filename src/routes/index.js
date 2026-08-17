@@ -37,4 +37,5 @@ router.use("/activity", require("./activity.routes"));
 router.use("/organization-requests", require("./organizationRequest.routes"));
 router.use("/contact", require("./contact.routes"));
 router.use("/platform-users", require("./platformUser.routes"));
+router.use("/support", require("./support.routes"));
 module.exports = router;

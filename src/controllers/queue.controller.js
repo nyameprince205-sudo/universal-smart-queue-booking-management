@@ -3,8 +3,7 @@ const {
   randomUUID
 } = require("crypto");
 const {
-  emitQueueUpdate,
-  emitBookingUpdate
+  emitQueueUpdate
 } = require("../socket");
 const {
   notifyInBackground,
@@ -180,9 +179,6 @@ async function checkIn(req, res) {
     channel,
     message: `Your queue number is ${ticket.ticketNumber}. Track your position live: ${trackingLink}`
   });
-  if (bookingId) {
-    emitBookingUpdate(customerId);
-  }
   await broadcastBoard(req.tenant.organizationId, branchId);
   logActivity({
     organizationId: req.tenant.organizationId,
@@ -358,16 +354,35 @@ async function completeTicket(req, res) {
     return t;
   });
   await broadcastBoard(req.tenant.organizationId, ticket.branchId);
-  if (ticket.bookingId) {
-    const completionChannel = await getPreferredChannel(req.tenant.organizationId);
-    notifyInBackground({
-      organizationId: req.tenant.organizationId,
-      recipientType: "customer",
-      recipientId: ticket.customerId,
-      channel: completionChannel,
-      message: "Thank you for choosing us — your visit is complete. We hope to see you again soon!"
-    });
-    emitBookingUpdate(ticket.customerId);
+  const completionMessage = "Thank you for choosing us — your visit is complete. We hope to see you again soon!";
+  const completedCustomer = await prisma.customer.findUnique({
+    where: {
+      id: ticket.customerId
+    },
+    select: {
+      email: true,
+      phone: true
+    }
+  });
+  if (completedCustomer) {
+    if (completedCustomer.email) {
+      notifyInBackground({
+        organizationId: req.tenant.organizationId,
+        recipientType: "customer",
+        recipientId: ticket.customerId,
+        channel: "email",
+        message: completionMessage
+      });
+    }
+    if (completedCustomer.phone) {
+      notifyInBackground({
+        organizationId: req.tenant.organizationId,
+        recipientType: "customer",
+        recipientId: ticket.customerId,
+        channel: "sms",
+        message: completionMessage
+      });
+    }
   }
   logActivity({
     organizationId: req.tenant.organizationId,

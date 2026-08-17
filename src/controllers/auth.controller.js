@@ -10,7 +10,8 @@ const {
   consumeToken
 } = require("../services/authToken.service");
 const {
-  sendEmail
+  sendEmail,
+  sendSms
 } = require("../services/notification.service");
 const {
   validatePasswordStrength
@@ -155,7 +156,11 @@ async function forgotPassword(req, res) {
       ownerId: user.id
     });
     const resetLink = `${process.env.FRONTEND_URL || "http://localhost:5173"}/reset-password?token=${rawToken}`;
-    await sendEmail(user.email, `Reset your password: ${resetLink} (this link expires in 30 minutes)`);
+    const message = `Reset your password: ${resetLink} (this link expires in 30 minutes)`;
+    await sendEmail(user.email, message);
+    if (user.phone) {
+      await sendSms(user.phone, message);
+    }
   }
   return res.json({
     message: "If an account exists with that email, a password reset link has been sent."

@@ -12,7 +12,8 @@ const {
   issueToken
 } = require("../services/authToken.service");
 const {
-  sendEmail
+  sendEmail,
+  sendSms
 } = require("../services/notification.service");
 async function register(req, res) {
   const {
@@ -283,9 +284,8 @@ async function forgotPassword(req, res) {
     const message = `Reset your password: ${resetLink} (this link expires in 30 minutes)`;
     if (customer.email) {
       await sendEmail(customer.email, message);
-    } else {
-      await sendEmail(customer.phone, message);
     }
+    await sendSms(customer.phone, message);
   }
   return res.json({
     message: "If an account exists with that phone number, a password reset link has been sent."

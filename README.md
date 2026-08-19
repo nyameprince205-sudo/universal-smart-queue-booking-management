@@ -121,12 +121,23 @@ ARKESEL_SENDER_ID=<your approved sender id, 11 chars max>
 PAYSTACK_SECRET_KEY=<your Paystack secret key>
 ```
 
-Create the database schema:
+Create the database and apply the schema:
 
 ```bash
-mysql -u root -p < prisma/schema.sql
-mysql -u root -p queue_saas < prisma/seed.sql   # optional demo data
+# Create an empty database first
+mysql -u root -p -e "CREATE DATABASE queue_saas;"
+
+# Apply the Prisma migration
+npx prisma migrate deploy
+
+# Generate the Prisma client
 npx prisma generate
+```
+
+Seed the roles, permissions and business types the platform needs:
+
+```bash
+node prisma/seed-auth.js
 ```
 
 Start the server:
@@ -162,6 +173,11 @@ Public endpoints (no authentication): organization search, guest booking, ticket
 ## Project structure
 
 ```
+prisma/
+├── schema.prisma    data model — the source of truth for the DB structure
+├── migrations/      versioned schema migrations
+└── seed-auth.js     seeds roles, permissions and business types
+
 src/
 ├── config/          database client, environment loading
 ├── controllers/     request handling and business logic

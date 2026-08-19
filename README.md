@@ -134,11 +134,21 @@ npx prisma migrate deploy
 npx prisma generate
 ```
 
-Seed the roles, permissions and business types the platform needs:
+Seed the reference data the platform needs (roles, business types, plans) and create the first Super Admin:
 
 ```bash
-node prisma/seed-auth.js
+node prisma/seed.js
 ```
+
+The Super Admin is only created if these are set in `.env` — deliberately, so no default credentials ship with the code:
+
+```ini
+SUPER_ADMIN_EMAIL=you@example.com
+SUPER_ADMIN_PASSWORD=<a strong password>
+SUPER_ADMIN_NAME=Platform Administrator
+```
+
+The seed is idempotent — safe to run on every deploy without duplicating data or overwriting an existing admin.
 
 Start the server:
 
@@ -176,7 +186,7 @@ Public endpoints (no authentication): organization search, guest booking, ticket
 prisma/
 ├── schema.prisma    data model — the source of truth for the DB structure
 ├── migrations/      versioned schema migrations
-└── seed-auth.js     seeds roles, permissions and business types
+└── seed.js          seeds roles, business types, plans, first admin
 
 src/
 ├── config/          database client, environment loading

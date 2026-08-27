@@ -244,6 +244,14 @@ model Service {
   name             String   @db.VarChar(150)
   description      String?  @db.VarChar(255)
   durationMinutes  Int      @default(30) @map("duration_minutes")
+  // Max bookings accepted for the same date AND time. Null = unlimited,
+  // which is what every service created before this feature has, so their
+  // behaviour is unchanged.
+  capacityPerSlot  Int?     @map("capacity_per_slot")
+  // What happens when capacity_per_slot is reached. waitlist suits short
+  // appointments (bank, clinic); reject suits day-long or single-item
+  // bookings (hotel room, a specific table) where waiting helps nobody.
+  whenFull         WhenFullBehaviour @default(waitlist) @map("when_full")
   price            Decimal? @db.Decimal(10, 2)
   isActive         Boolean  @default(true) @map("is_active")
   createdAt        DateTime @default(now()) @map("created_at")
@@ -282,6 +290,7 @@ model Booking {
 
   @@index([organizationId, bookingDate, status])
   @@index([customerId])
+  @@index([serviceId, bookingDate, bookingTime, status])
   @@map("bookings")
 }
 
@@ -292,6 +301,9 @@ enum BookingStatus {
   cancelled
   completed
   no_show
+  // Appended, never inserted mid-list: MySQL stores enums by ordinal
+  // position, so inserting here would silently reassign every existing row.
+  waitlisted
 }
 
 // ------------------------------------------------------------
@@ -694,4 +706,9 @@ enum TicketPartyType {
 enum TicketToType {
   org_admin
   super_admin
+}
+
+enum WhenFullBehaviour {
+  waitlist
+  reject
 }

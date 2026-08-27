@@ -16,10 +16,12 @@ const ALLOWED_TRANSITIONS = {
   pending: ["confirmed", "cancelled"],
   confirmed: ["cancelled", "no_show"],
   checked_in: ["completed", "cancelled"],
+  waitlisted: ["pending", "cancelled"],
   cancelled: [],
   completed: [],
   no_show: []
 };
+const SLOT_OCCUPYING_STATUSES = ["pending", "confirmed", "checked_in"];
 function canTransition(from, to) {
   return (ALLOWED_TRANSITIONS[from] || []).includes(to);
 }
@@ -47,7 +49,45 @@ async function createBookingCore({
   })]);
   if (!branch) throw httpError(400, "branchId does not belong to this organization");
   if (!service) throw httpError(400, "serviceId does not belong to this organization");
+  const normalizedDate = String(bookingDate).slice(0, 10);
+  const normalizedTime = String(bookingTime).length === 5 ? `${bookingTime}:00` : String(bookingTime).slice(0, 8);
   const booking = await prisma.$transaction(async tx => {
+    const [lockedService] = await tx.$queryRaw`
+      SELECT capacity_per_slot, when_full FROM services WHERE id = ${serviceId} FOR UPDATE
+    `;
+    const duplicates = await tx.$queryRaw`
+      SELECT id FROM bookings
+      WHERE customer_id = ${customerId}
+        AND service_id = ${serviceId}
+        AND booking_date = ${normalizedDate}
+        AND booking_time = ${normalizedTime}
+        AND status IN ('pending', 'confirmed', 'checked_in', 'waitlisted')
+      LIMIT 1
+    `;
+    if (duplicates.length > 0) {
+      throw httpError(409, "You already have a booking for this service at that time. Increase the party size if you're booking for more people.");
+    }
+    const rawCapacity = lockedService?.capacity_per_slot;
+    const capacity = rawCapacity === null || rawCapacity === undefined ? null : Number(rawCapacity);
+    let status = "pending";
+    if (capacity !== null) {
+      const [{
+        taken
+      }] = await tx.$queryRaw`
+        SELECT COUNT(*) AS taken FROM bookings
+        WHERE service_id = ${serviceId}
+          AND booking_date = ${normalizedDate}
+          AND booking_time = ${normalizedTime}
+          AND status IN ('pending', 'confirmed', 'checked_in')
+      `;
+      if (Number(taken) >= capacity) {
+        const whenFull = lockedService?.when_full || "waitlist";
+        if (whenFull === "reject") {
+          throw httpError(409, "That time is already fully booked. Please choose another time or date — or another branch if this business has more than one.");
+        }
+        status = "waitlisted";
+      }
+    }
     const created = await tx.booking.create({
       data: {
         uuid: randomUUID(),
@@ -56,12 +96,25 @@ async function createBookingCore({
         customerId,
         serviceId,
         bookingDate: new Date(bookingDate),
-        bookingTime: new Date(`1970-01-01T${bookingTime}Z`),
+        bookingTime: new Date(`1970-01-01T${normalizedTime}Z`),
         partySize: partySize || 1,
         notes: notes || null,
-        status: "pending"
+        status
       }
     });
+    if (status === "waitlisted") {
+      const [{
+        ahead
+      }] = await tx.$queryRaw`
+        SELECT COUNT(*) AS ahead FROM bookings
+        WHERE service_id = ${serviceId}
+          AND booking_date = ${normalizedDate}
+          AND booking_time = ${normalizedTime}
+          AND status = 'waitlisted'
+          AND id < ${created.id}
+      `;
+      created.waitlistPosition = Number(ahead) + 1;
+    }
     await tx.customerOrganization.upsert({
       where: {
         uq_customer_org: {
@@ -86,12 +139,13 @@ async function createBookingCore({
     return created;
   });
   const channel = await getPreferredChannel(organizationId);
+  const message = booking.status === "waitlisted" ? `That slot is currently full, so you're on the waitlist for ${bookingDate} at ${bookingTime}. We'll message you straight away if a place opens up.` : `Your booking for ${bookingDate} at ${bookingTime} has been received and is pending confirmation.`;
   notifyInBackground({
     organizationId,
     recipientType: "customer",
     recipientId: customerId,
     channel,
-    message: `Your booking for ${bookingDate} at ${bookingTime} has been received and is pending confirmation.`
+    message
   });
   logActivity({
     organizationId,
@@ -324,7 +378,79 @@ async function updateBookingStatus(req, res) {
       metadata: null
     });
   }
+  if (["cancelled", "no_show", "completed"].includes(nextStatus)) {
+    promoteFromWaitlist(booking);
+  }
   return res.json(serialize(updated));
+}
+async function promoteFromWaitlist(freedBooking) {
+  try {
+    const service = await prisma.service.findUnique({
+      where: {
+        id: freedBooking.serviceId
+      },
+      select: {
+        capacityPerSlot: true,
+        whenFull: true
+      }
+    });
+    if (service?.whenFull === "reject") return;
+    if (!service || service.capacityPerSlot === null) return;
+    const dateStr = freedBooking.bookingDate.toISOString().slice(0, 10);
+    const timeStr = freedBooking.bookingTime.toISOString().slice(11, 19);
+    const [{
+      taken
+    }] = await prisma.$queryRaw`
+      SELECT COUNT(*) AS taken FROM bookings
+      WHERE service_id = ${freedBooking.serviceId}
+        AND booking_date = ${dateStr}
+        AND booking_time = ${timeStr}
+        AND status IN ('pending', 'confirmed', 'checked_in')
+    `;
+    if (Number(taken) >= Number(service.capacityPerSlot)) return;
+    const nextRows = await prisma.$queryRaw`
+      SELECT id FROM bookings
+      WHERE service_id = ${freedBooking.serviceId}
+        AND booking_date = ${dateStr}
+        AND booking_time = ${timeStr}
+        AND status = 'waitlisted'
+      ORDER BY created_at ASC
+      LIMIT 1
+    `;
+    if (nextRows.length === 0) return;
+    const next = await prisma.booking.findUnique({
+      where: {
+        id: BigInt(nextRows[0].id)
+      }
+    });
+    if (!next) return;
+    await prisma.booking.update({
+      where: {
+        id: next.id
+      },
+      data: {
+        status: "pending"
+      }
+    });
+    const channel = await getPreferredChannel(next.organizationId);
+    notifyInBackground({
+      organizationId: next.organizationId,
+      recipientType: "customer",
+      recipientId: next.customerId,
+      channel,
+      message: `Good news — a place has opened up and your booking for ${dateStr} is now confirmed. See you then!`
+    });
+    logActivity({
+      organizationId: next.organizationId,
+      userId: null,
+      action: "booking_promoted_from_waitlist",
+      entityType: "booking",
+      entityId: next.id,
+      metadata: null
+    });
+  } catch (err) {
+    console.error("[waitlist] promotion failed:", err.message);
+  }
 }
 async function cancelMyBooking(req, res) {
   const booking = await prisma.booking.findFirst({
@@ -357,6 +483,7 @@ async function cancelMyBooking(req, res) {
     entityId: booking.id,
     metadata: null
   });
+  promoteFromWaitlist(booking);
   return res.json(serialize(updated));
 }
 function serialize(booking) {
@@ -365,9 +492,11 @@ function serialize(booking) {
 module.exports = {
   listBookings,
   createBooking,
+  createBookingCore,
   createMyBooking,
   createGuestBooking,
   listMyBookings,
   updateBookingStatus,
-  cancelMyBooking
+  cancelMyBooking,
+  promoteFromWaitlist
 };

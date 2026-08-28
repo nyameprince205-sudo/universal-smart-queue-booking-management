@@ -226,10 +226,43 @@ async function listOrganizations(req, res) {
       createdAt: "desc"
     },
     include: {
-      businessType: true
+      businessType: true,
+      subscriptions: {
+        orderBy: {
+          createdAt: "desc"
+        },
+        take: 1,
+        include: {
+          plan: true
+        }
+      }
     }
   });
-  return res.json(organizations.map(serializeOrg));
+  const now = new Date();
+  return res.json(organizations.map(org => {
+    const sub = org.subscriptions?.[0] || null;
+    let subscriptionState = null;
+    if (sub) {
+      const endDate = new Date(sub.endDate);
+      const endMidnight = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+      const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const daysRemaining = Math.round((endMidnight.getTime() - todayMidnight.getTime()) / (1000 * 60 * 60 * 24));
+      subscriptionState = {
+        plan: sub.plan?.name || null,
+        storedStatus: sub.status,
+        state: daysRemaining < 0 ? "expired" : sub.status,
+        hasAccess: daysRemaining >= 0 && ["trial", "active"].includes(sub.status),
+        daysRemaining: Math.max(0, daysRemaining),
+        isTrial: sub.status === "trial",
+        startDate: sub.startDate,
+        endDate: sub.endDate
+      };
+    }
+    return {
+      ...serializeOrg(org),
+      subscription: subscriptionState
+    };
+  }));
 }
 async function getOrganization(req, res) {
   const organization = await prisma.organization.findUnique({

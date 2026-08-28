@@ -2,6 +2,9 @@ const prisma = require("../config/db");
 const {
   Resend
 } = require("resend");
+const {
+  resolveSubscriptionState
+} = require("../middleware/subscription.middleware");
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 const ARKESEL_SEND_URL = "https://sms.arkesel.com/api/v2/sms/send";
 async function sendSms(phone, message) {
@@ -91,6 +94,23 @@ async function notify({
   channel,
   message
 }) {
+  if (organizationId) {
+    const state = await resolveSubscriptionState(organizationId);
+    if (!state.hasAccess) {
+      await prisma.notification.create({
+        data: {
+          organizationId,
+          recipientType,
+          recipientId,
+          channel,
+          message,
+          status: "blocked"
+        }
+      });
+      console.warn(`[notify] blocked ${channel} for organization ${organizationId} — ${state.reason}`);
+      return false;
+    }
+  }
   const notification = await prisma.notification.create({
     data: {
       organizationId,

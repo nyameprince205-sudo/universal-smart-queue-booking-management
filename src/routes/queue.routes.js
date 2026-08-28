@@ -4,6 +4,9 @@ const authenticate = require("../middleware/auth.middleware");
 const requireTenant = require("../middleware/tenant.middleware");
 const requireRole = require("../middleware/role.middleware");
 const {
+  requireActiveSubscription
+} = require("../middleware/subscription.middleware");
+const {
   checkIn,
   callNext,
   markServing,
@@ -17,8 +20,8 @@ const router = express.Router();
 router.use(authenticate, requireTenant);
 router.get("/board", asyncHandler(liveBoard));
 router.get("/counters", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(listCounters));
-router.post("/counters", requireRole("ORG_ADMIN"), asyncHandler(createCounter));
-router.post("/check-in", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(checkIn));
+router.post("/counters", requireRole("ORG_ADMIN"), requireActiveSubscription, asyncHandler(createCounter));
+router.post("/check-in", requireRole("STAFF", "ORG_ADMIN"), requireActiveSubscription, asyncHandler(checkIn));
 router.post("/call-next", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(callNext));
 router.patch("/:id/serving", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(markServing));
 router.patch("/:id/complete", requireRole("STAFF", "ORG_ADMIN"), asyncHandler(completeTicket));

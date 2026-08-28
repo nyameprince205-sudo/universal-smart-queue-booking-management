@@ -10,6 +10,9 @@ const {
 const {
   activateSubscriptionFromPayment
 } = require("../services/subscription.service");
+const {
+  resolveSubscriptionState
+} = require("../middleware/subscription.middleware");
 async function listPlans(req, res) {
   const plans = await prisma.plan.findMany({
     where: {
@@ -36,31 +39,35 @@ async function listPlans(req, res) {
   })));
 }
 async function getMySubscription(req, res) {
-  const subscription = await prisma.subscription.findFirst({
-    where: {
-      organizationId: req.tenant.organizationId,
-      status: {
-        in: ["trial", "active"]
-      }
-    },
-    orderBy: {
-      createdAt: "desc"
-    },
-    include: {
-      plan: true
-    }
-  });
-  if (!subscription) return res.json({
-    subscription: null,
-    message: "No active subscription"
-  });
+  const state = await resolveSubscriptionState(req.tenant.organizationId);
+  if (!state.subscription) {
+    return res.json({
+      subscription: null,
+      hasAccess: false,
+      state: "none",
+      daysRemaining: 0,
+      message: "No active subscription"
+    });
+  }
+  const sub = state.subscription;
+  let warningLevel = null;
+  if (state.hasAccess) {
+    if (state.daysRemaining <= 1) warningLevel = "critical";else if (state.daysRemaining <= 3) warningLevel = "urgent";else if (state.daysRemaining <= 7) warningLevel = "soon";
+  }
   return res.json({
-    id: subscription.id.toString(),
-    plan: subscription.plan.name,
-    status: subscription.status,
-    startDate: subscription.startDate,
-    endDate: subscription.endDate,
-    autoRenew: subscription.autoRenew
+    id: sub.id.toString(),
+    plan: sub.plan.name,
+    planId: sub.plan.id,
+    price: sub.plan.price ? sub.plan.price.toString() : "0",
+    status: sub.status,
+    state: state.state,
+    hasAccess: state.hasAccess,
+    daysRemaining: state.daysRemaining,
+    warningLevel,
+    startDate: sub.startDate,
+    endDate: sub.endDate,
+    autoRenew: sub.autoRenew,
+    isTrial: sub.status === "trial"
   });
 }
 async function initializeSubscription(req, res) {

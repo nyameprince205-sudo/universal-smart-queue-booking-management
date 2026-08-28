@@ -13,6 +13,7 @@ const {
 const {
   notifyInBackground
 } = require("../services/notification.service");
+const TRIAL_DAYS = 30;
 function httpError(status, message) {
   const err = new Error(message);
   err.status = status;
@@ -143,6 +144,30 @@ async function createOrganizationCore({
         emailVerified: true
       }
     });
+    const trialPlan = (await tx.plan.findFirst({
+      where: {
+        name: "Trial"
+      }
+    })) || (await tx.plan.findFirst({
+      orderBy: {
+        price: "asc"
+      }
+    }));
+    if (trialPlan) {
+      const startDate = new Date();
+      const endDate = new Date(startDate);
+      endDate.setDate(endDate.getDate() + TRIAL_DAYS);
+      await tx.subscription.create({
+        data: {
+          organizationId: org.id,
+          planId: trialPlan.id,
+          startDate,
+          endDate,
+          status: "trial",
+          autoRenew: false
+        }
+      });
+    }
     return {
       org,
       adminUser

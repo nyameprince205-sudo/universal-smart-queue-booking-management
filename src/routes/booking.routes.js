@@ -4,6 +4,9 @@ const authenticate = require("../middleware/auth.middleware");
 const requireTenant = require("../middleware/tenant.middleware");
 const requireRole = require("../middleware/role.middleware");
 const {
+  requireActiveSubscription
+} = require("../middleware/subscription.middleware");
+const {
   listBookings,
   createBooking,
   createMyBooking,
@@ -12,16 +15,15 @@ const {
   updateBookingStatus,
   cancelMyBooking
 } = require("../controllers/booking.controller");
-const router = express.Router();
 const {
   guestBookingLimiter
 } = require("../middleware/rateLimit.middleware");
-router.post("/guest", guestBookingLimiter, asyncHandler(createGuestBooking));
-router.post("/guest", asyncHandler(createGuestBooking));
+const router = express.Router();
+router.post("/guest", guestBookingLimiter, requireActiveSubscription, asyncHandler(createGuestBooking));
 router.get("/mine", authenticate, requireRole("CUSTOMER"), asyncHandler(listMyBookings));
-router.post("/mine", authenticate, requireRole("CUSTOMER"), asyncHandler(createMyBooking));
+router.post("/mine", authenticate, requireRole("CUSTOMER"), requireActiveSubscription, asyncHandler(createMyBooking));
 router.patch("/mine/:id/cancel", authenticate, requireRole("CUSTOMER"), asyncHandler(cancelMyBooking));
 router.get("/", authenticate, requireTenant, asyncHandler(listBookings));
-router.post("/", authenticate, requireTenant, requireRole("STAFF", "ORG_ADMIN"), asyncHandler(createBooking));
+router.post("/", authenticate, requireTenant, requireRole("STAFF", "ORG_ADMIN"), requireActiveSubscription, asyncHandler(createBooking));
 router.patch("/:id/status", authenticate, requireTenant, requireRole("STAFF", "ORG_ADMIN"), asyncHandler(updateBookingStatus));
 module.exports = router;

@@ -621,6 +621,7 @@ function serialize(ticket) {
   return toJSONSafe(ticket);
 }
 module.exports = {
+  averageServiceTimeSeconds,
   checkIn,
   callNext,
   markServing,

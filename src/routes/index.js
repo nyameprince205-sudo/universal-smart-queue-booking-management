@@ -20,6 +20,8 @@ router.get("/health", async (req, res) => {
   }
 });
 router.get("/queue/track/:uuid", asyncHandler(trackTicket));
+router.get("/queue/status/:slug", asyncHandler(require("../controllers/publicQueue.controller").getPublicQueueStatus));
+router.get("/queue/platform-stats", asyncHandler(require("../controllers/publicQueue.controller").getPlatformQueueStats));
 router.use("/auth", require("./auth.routes"));
 router.use("/organizations", require("./organization.routes"));
 router.use("/branches", require("./branch.routes"));

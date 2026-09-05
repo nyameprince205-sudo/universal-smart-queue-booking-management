@@ -15,6 +15,9 @@ const {
 const {
   toJSONSafe
 } = require("../utils/serialize");
+const {
+  serviceIdsForStaff
+} = require("./staffService.controller");
 async function createCounter(req, res) {
   const {
     branchId,
@@ -59,6 +62,13 @@ async function listCounters(req, res) {
     },
     orderBy: {
       name: "asc"
+    },
+    include: {
+      assignedUser: {
+        select: {
+          name: true
+        }
+      }
     }
   });
   return res.json(counters.map(c => ({
@@ -66,21 +76,28 @@ async function listCounters(req, res) {
     organizationId: c.organizationId.toString(),
     branchId: c.branchId.toString(),
     name: c.name,
-    status: c.status
+    status: c.status,
+    assignedUserId: c.assignedUserId ? c.assignedUserId.toString() : null,
+    assignedUserName: c.assignedUser?.name || null
   })));
 }
 function todayDateOnly() {
   const d = new Date();
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
-async function fetchBoard(organizationId, branchId) {
+async function fetchBoard(organizationId, branchId, serviceIds = null) {
   const tickets = await prisma.queueTicket.findMany({
     where: {
       organizationId,
       branchId,
       status: {
         in: ["waiting", "called", "serving"]
-      }
+      },
+      ...(serviceIds ? {
+        serviceId: {
+          in: serviceIds
+        }
+      } : {})
     },
     orderBy: [{
       priority: "desc"
@@ -117,6 +134,22 @@ async function checkIn(req, res) {
     return res.status(400).json({
       error: "branchId is required (or your account must be branch-scoped)"
     });
+  }
+  if (!req.tenant.branchId) {
+    const ownsBranch = await prisma.branch.findFirst({
+      where: {
+        id: branchId,
+        organizationId: req.tenant.organizationId
+      },
+      select: {
+        id: true
+      }
+    });
+    if (!ownsBranch) {
+      return res.status(400).json({
+        error: "branchId does not belong to this organization"
+      });
+    }
   }
   if (!customerId || !serviceId) {
     return res.status(400).json({
@@ -199,15 +232,36 @@ async function callNext(req, res) {
   if (!counterId) return res.status(400).json({
     error: "counterId is required"
   });
-  const branchId = req.tenant.branchId;
-  if (!branchId) return res.status(400).json({
-    error: "Your account must be branch-scoped to call tickets"
+  const counterRecord = await prisma.serviceCounter.findFirst({
+    where: {
+      id: BigInt(counterId),
+      organizationId: req.tenant.organizationId
+    },
+    select: {
+      id: true,
+      branchId: true
+    }
   });
+  if (!counterRecord) return res.status(404).json({
+    error: "Counter not found"
+  });
+  const branchId = req.tenant.branchId || counterRecord.branchId;
+  if (req.tenant.branchId && String(counterRecord.branchId) !== String(req.tenant.branchId)) {
+    return res.status(403).json({
+      error: "That counter is at a different branch"
+    });
+  }
+  const callableServiceIds = req.auth?.role === "ORG_ADMIN" ? null : await serviceIdsForStaff(BigInt(req.auth.userId));
   const nextTicket = await prisma.queueTicket.findFirst({
     where: {
       organizationId: req.tenant.organizationId,
       branchId,
-      status: "waiting"
+      status: "waiting",
+      ...(callableServiceIds ? {
+        serviceId: {
+          in: callableServiceIds
+        }
+      } : {})
     },
     orderBy: [{
       priority: "desc"
@@ -217,7 +271,7 @@ async function callNext(req, res) {
   });
   if (!nextTicket) {
     return res.status(404).json({
-      error: "No customers waiting"
+      error: callableServiceIds ? "No customers waiting for the services you handle" : "No customers waiting"
     });
   }
   const updated = await prisma.$transaction(async tx => {
@@ -462,7 +516,8 @@ async function liveBoard(req, res) {
   if (!branchId) return res.status(400).json({
     error: "branchId is required"
   });
-  const board = await fetchBoard(req.tenant.organizationId, branchId);
+  const serviceIds = req.auth?.role === "ORG_ADMIN" ? null : await serviceIdsForStaff(BigInt(req.auth.userId));
+  const board = await fetchBoard(req.tenant.organizationId, branchId, serviceIds);
   return res.json(board);
 }
 async function averageServiceTimeSeconds(organizationId, branchId) {

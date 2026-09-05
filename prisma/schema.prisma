@@ -175,6 +175,8 @@ model User {
   @@index([organizationId])
   @@index([branchId])
   @@map("users")
+  assignedCounter ServiceCounter? @relation("CounterAssignee")
+  staffServices StaffService[]
 }
 
 enum UserStatus {
@@ -261,6 +263,7 @@ model Service {
   branch       Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
   bookings     Booking[]
   queueTickets QueueTicket[]
+  staffServices StaffService[]
 
   @@index([organizationId, isActive])
   @@map("services")
@@ -322,6 +325,8 @@ model ServiceCounter {
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   branch       Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
   queueTickets QueueTicket[]
+  assignedUserId BigInt?  @unique @map("assigned_user_id")
+  assignedUser   User?    @relation("CounterAssignee", fields: [assignedUserId], references: [id], onDelete: SetNull)
 
   @@unique([branchId, name], name: "uq_counter_branch_name")
   @@map("service_counters")
@@ -641,6 +646,21 @@ enum OrgRequestStatus {
   approved
   rejected
 }
+
+
+model StaffService {
+  id        BigInt   @id @default(autoincrement())
+  userId    BigInt   @map("user_id")
+  serviceId BigInt   @map("service_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  @@unique([userId, serviceId])
+  @@index([userId])
+  @@map("staff_services")
+}
+
 
 
 model ContactSubmission {

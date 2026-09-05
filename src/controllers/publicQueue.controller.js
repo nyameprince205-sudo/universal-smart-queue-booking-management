@@ -1,7 +1,28 @@
 const prisma = require("../config/db");
-const {
-  averageServiceTimeSeconds
-} = require("./queue.controller");
+const DEFAULT_SERVICE_SECONDS = 600;
+async function averageServiceSecondsFor(organizationId) {
+  try {
+    const result = await prisma.queueHistory.aggregate({
+      _avg: {
+        serviceTimeSeconds: true
+      },
+      where: {
+        serviceTimeSeconds: {
+          not: null
+        },
+        queueTicket: {
+          is: {
+            organizationId
+          }
+        }
+      }
+    });
+    const avg = result?._avg?.serviceTimeSeconds;
+    return avg && avg > 0 ? Math.round(avg) : DEFAULT_SERVICE_SECONDS;
+  } catch {
+    return DEFAULT_SERVICE_SECONDS;
+  }
+}
 async function getPublicQueueStatus(req, res) {
   const organization = await prisma.organization.findUnique({
     where: {
@@ -46,7 +67,7 @@ async function getPublicQueueStatus(req, res) {
         branchId: branch.id,
         status: "open"
       }
-    }), averageServiceTimeSeconds(organization.id, branch.id), prisma.queueTicket.findFirst({
+    }), averageServiceSecondsFor(organization.id), prisma.queueTicket.findFirst({
       where: {
         organizationId: organization.id,
         branchId: branch.id,
@@ -112,19 +133,10 @@ async function getPlatformQueueStats(req, res) {
     },
     _count: {
       _all: true
-    },
-    orderBy: {
-      _count: {
-        organizationId: "desc"
-      }
-    },
-    take: 3
+    }
   })]);
-  const busiest = busiestRaw.length ? (await prisma.organization.findMany({
+  const allOrgs = await prisma.organization.findMany({
     where: {
-      id: {
-        in: busiestRaw.map(b => b.organizationId)
-      },
       status: {
         in: ["trial", "active"]
       }
@@ -138,13 +150,45 @@ async function getPlatformQueueStats(req, res) {
           name: true
         }
       }
+    },
+    orderBy: {
+      name: "asc"
+    },
+    take: 12
+  });
+  const servingNow = allOrgs.length ? await prisma.queueTicket.findMany({
+    where: {
+      organizationId: {
+        in: allOrgs.map(o => o.id)
+      },
+      status: {
+        in: ["called", "serving"]
+      }
+    },
+    orderBy: {
+      calledAt: "desc"
+    },
+    select: {
+      organizationId: true,
+      ticketNumber: true,
+      calledAt: true
     }
-  })).map(org => ({
-    name: org.name,
-    slug: org.slug,
-    businessType: org.businessType?.name || null,
-    waiting: busiestRaw.find(b => String(b.organizationId) === String(org.id))?._count?._all || 0
-  })).sort((a, b) => b.waiting - a.waiting) : [];
+  }) : [];
+  const busiest = await Promise.all(allOrgs.map(async org => {
+    const waiting = busiestRaw.find(b => String(b.organizationId) === String(org.id))?._count?._all || 0;
+    const serving = servingNow.find(t => String(t.organizationId) === String(org.id));
+    const avgServiceSeconds = await averageServiceSecondsFor(org.id);
+    const estimatedWaitMinutes = waiting > 0 ? Math.max(1, Math.round((waiting + 1) * avgServiceSeconds / 60)) : 0;
+    return {
+      name: org.name,
+      slug: org.slug,
+      businessType: org.businessType?.name || null,
+      waiting,
+      nowServing: serving?.ticketNumber || null,
+      estimatedWaitMinutes
+    };
+  }));
+  busiest.sort((a, b) => b.waiting - a.waiting || a.name.localeCompare(b.name));
   const value = {
     waitingNow,
     activeOrganizations,

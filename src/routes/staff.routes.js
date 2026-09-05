@@ -13,6 +13,14 @@ const {
   reactivateStaff
 } = require("../controllers/staff.controller");
 const router = express.Router();
+const {
+  getStaffServices,
+  setStaffServices,
+  getMyServices
+} = require("../controllers/staffService.controller");
+router.get("/my-services", authenticate, requireTenant, asyncHandler(getMyServices));
+router.get("/:id/services", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(getStaffServices));
+router.put("/:id/services", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(setStaffServices));
 router.get("/", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(listStaff));
 router.post("/", authenticate, requireTenant, requireRole("ORG_ADMIN"), requireActiveSubscription, asyncHandler(createStaff));
 router.patch("/:id/deactivate", authenticate, requireTenant, requireRole("ORG_ADMIN"), asyncHandler(deactivateStaff));

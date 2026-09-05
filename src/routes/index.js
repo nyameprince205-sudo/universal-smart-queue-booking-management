@@ -2,6 +2,10 @@ const express = require("express");
 const prisma = require("../config/db");
 const asyncHandler = require("../utils/asyncHandler");
 const {
+  getMyCounter,
+  assignCounter
+} = require("../controllers/myCounter.controller");
+const {
   trackTicket
 } = require("../controllers/queue.controller");
 const router = express.Router();
